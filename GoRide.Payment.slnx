@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/GoRide.Payment/GoRide.Payment.csproj" />
+  <Project Path="tests/GoRide.Payment.Tests/GoRide.Payment.Tests.csproj" />
+</Solution>
