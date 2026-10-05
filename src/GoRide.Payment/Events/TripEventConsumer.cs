@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Confluent.Kafka;
-using GoRide.Payment.Data;
+using GoRide.Payment.Checkout;
 using GoRide.Payment.Models;
 using GoRide.Payment.Services;
 
@@ -45,12 +45,13 @@ public sealed class TripEventConsumer(IConfiguration configuration, IServiceScop
                     {
                         var evt = json.Deserialize<TripCompletedEvent>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                         using var scope = scopes.CreateScope();
-                        await scope.ServiceProvider.GetRequiredService<PaymentStore>().CompleteAsync(evt, stoppingToken);
+                        await scope.ServiceProvider.GetRequiredService<TripCompletionService>().CompleteAsync(evt, stoppingToken);
                     }
                     // Commit only after durable processing. A failed commit may replay the event safely.
                     consumer.Commit(record);
                 }
-                catch (Exception ex) when (ex is JsonException or PaymentException)
+                catch (Exception ex) when (ex is JsonException
+                    || ex is PaymentException payment && payment.Status < 500 && payment.Code != "CHECKOUT_BUSY")
                 {
                     logger.LogCritical(ex, "Invalid payment event at {Position}; offset was not committed. Correct or reconcile this event before restarting.", record.TopicPartitionOffset);
                     throw;

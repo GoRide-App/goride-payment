@@ -1,4 +1,6 @@
 using GoRide.Payment.Auth;
+using GoRide.Payment.Checkout;
+using GoRide.Payment.Development;
 using GoRide.Payment.Data;
 using GoRide.Payment.Events;
 using GoRide.Payment.Services;
@@ -19,6 +21,14 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<PaymentStore>();
+builder.Services.AddScoped<CheckoutStore>();
+builder.Services.AddScoped<CheckoutService>();
+builder.Services.AddScoped<TripCompletionService>();
+builder.Services.AddSingleton<StripeSettings>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<ICheckoutProvider, StripeCheckoutClient>();
+builder.Services.AddHttpClient("Stripe", client => client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, IdentitySessionHandler>(IdentitySessionHandler.SchemeName, _ => { });
 builder.Services.AddAuthorization();
@@ -54,11 +64,12 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapDevelopmentCheckout();
 app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
 {
     await using var connection = store.CreateConnection();
     await connection.OpenAsync(ct);
-    await using var command = new MySqlCommand("SELECT 1 FROM payments LIMIT 1", connection);
+    await using var command = new MySqlCommand("SELECT 1 FROM payments LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id LIMIT 1", connection);
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });
 });
