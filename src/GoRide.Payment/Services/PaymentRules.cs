@@ -89,4 +89,15 @@ public static class PaymentRules
         // Selection alone never charges, increments attempts, or marks the trip paid.
         return payment with { Method = "Card" };
     }
+
+    public static PaymentRecord SelectCash(PaymentRecord payment, string riderId)
+    {
+        if (payment.RiderId != riderId)
+            throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only the rider who took this trip can select its payment method.");
+        if (payment.Status is "Paid" or "Charged" or "AwaitingCash")
+            throw new PaymentException(409, "PAYMENT_SETTLED", "This trip has already been paid or is awaiting cash.");
+        if (payment.Status != "Pending")
+            throw new PaymentException(409, "PAYMENT_NOT_PENDING", "This payment cannot be changed to cash.");
+        return payment with { Method = "Cash", Status = "AwaitingCash" };
+    }
 }

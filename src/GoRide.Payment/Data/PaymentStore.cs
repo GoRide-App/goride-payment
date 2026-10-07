@@ -40,6 +40,19 @@ public sealed class PaymentStore(IConfiguration configuration)
         return selected;
     }
 
+    public async Task<PaymentRecord> SelectCashAsync(string tripId, string riderId, CancellationToken ct)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var payment = await ReadAsync(connection, transaction, tripId, ct)
+            ?? throw new PaymentException(409, "TRIP_NOT_COMPLETED", "The completed trip and final fare are not available yet.");
+        var selected = PaymentRules.SelectCash(payment, riderId);
+        if (selected != payment) await WriteAsync(connection, transaction, selected, ct);
+        await transaction.CommitAsync(ct);
+        return selected;
+    }
+
     public async Task<PaymentRecord> CompleteAsync(TripCompletedEvent evt, CancellationToken ct)
     {
         PaymentRules.ValidateCompletion(evt);

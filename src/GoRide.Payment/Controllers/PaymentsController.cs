@@ -27,9 +27,14 @@ public sealed class PaymentsController(PaymentStore store) : ControllerBase
     public async Task<IActionResult> SelectMethod(string tripId, SelectMethodRequest request, CancellationToken ct)
     {
         PaymentRules.ValidateId(tripId, "tripId");
-        if (request.Method != "Card")
-            throw new PaymentException(400, "INVALID_PAYMENT_METHOD", "method must be Card.");
-        return Ok(await store.SelectCardAsync(tripId, User.FindFirstValue("sub")!, ct));
+        if (request.Method != "Card" && request.Method != "Cash")
+            throw new PaymentException(400, "INVALID_PAYMENT_METHOD", "method must be Card or Cash.");
+            
+        var riderId = User.FindFirstValue("sub")!;
+        if (request.Method == "Cash")
+            return Ok(await store.SelectCashAsync(tripId, riderId, ct));
+            
+        return Ok(await store.SelectCardAsync(tripId, riderId, ct));
     }
 }
 
