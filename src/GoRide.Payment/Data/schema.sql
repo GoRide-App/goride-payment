@@ -39,6 +39,25 @@ CREATE TABLE IF NOT EXISTS payment_verifications (
     FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
 ) ENGINE=InnoDB;
 
+-- SCRUM-104: the rider's in-app confirmation. Written in the same transaction that marks
+-- the trip paid, so one verified card payment yields exactly one confirmation.
+CREATE TABLE IF NOT EXISTS payment_confirmations (
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
+    confirmation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+    rider_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    amount_minor BIGINT NOT NULL,
+    currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    provider VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    provider_payment_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    provider_order_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    payment_method VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    card_masked VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    paid_at DATETIME(6) NOT NULL,
+    acknowledged_at DATETIME(6) NULL,
+    INDEX ix_confirmation_rider (rider_id, paid_at),
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS processed_payment_events (
     event_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

@@ -90,8 +90,34 @@ public sealed class VerificationStore(PaymentStore payments)
             }
         }
         if (decision.Payment != payment) await PaymentStore.WriteAsync(connection, transaction, decision.Payment, ct);
+        // SCRUM-104: the confirmation commits with the paid state. Paid is only decided while
+        // the trip is unpaid under this row lock, so exactly one confirmation can exist.
+        if (decision.Outcome == VerificationOutcome.Paid)
+            await InsertConfirmationAsync(connection, transaction, decision.Payment, notice, ct);
         await transaction.CommitAsync(ct);
         return new(decision.Outcome, decision.Payment, false);
+    }
+
+    private static async Task InsertConfirmationAsync(MySqlConnection connection, MySqlTransaction transaction,
+        PaymentRecord paid, VerificationRecord notice, CancellationToken ct)
+    {
+        await using var command = new MySqlCommand("""
+            INSERT INTO payment_confirmations (trip_id, confirmation_id, rider_id, amount_minor, currency, provider,
+                provider_payment_id, provider_order_id, payment_method, card_masked, paid_at)
+            VALUES (@trip, @confirmation, @rider, @amount, @currency, @provider, @payment, @order, @method, @card, @paid)
+            """, connection, transaction);
+        command.Parameters.AddWithValue("@trip", paid.TripId);
+        command.Parameters.AddWithValue("@confirmation", Guid.NewGuid().ToString());
+        command.Parameters.AddWithValue("@rider", paid.RiderId);
+        command.Parameters.AddWithValue("@amount", notice.AmountMinor);
+        command.Parameters.AddWithValue("@currency", notice.Currency);
+        command.Parameters.AddWithValue("@provider", notice.Provider);
+        command.Parameters.AddWithValue("@payment", notice.PaymentId);
+        command.Parameters.AddWithValue("@order", notice.OrderId);
+        command.Parameters.AddWithValue("@method", (object?)notice.PaymentMethod ?? DBNull.Value);
+        command.Parameters.AddWithValue("@card", (object?)notice.CardMasked ?? DBNull.Value);
+        command.Parameters.AddWithValue("@paid", notice.ReceivedAt.UtcDateTime);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     private static VerificationResult Duplicate((string Hash, string Outcome) stored, VerificationRecord notice, PaymentRecord payment)
