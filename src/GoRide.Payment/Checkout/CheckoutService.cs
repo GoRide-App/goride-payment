@@ -1,9 +1,10 @@
 using GoRide.Payment.Data;
 using GoRide.Payment.Services;
+using GoRide.Payment.Verification;
 
 namespace GoRide.Payment.Checkout;
 
-public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkouts,
+public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkouts, VerificationStore verifications,
     PayHereSettings settings, TimeProvider clock)
 {
     public async Task<CheckoutForm> CreateAsync(string tripId, string riderId, RiderContact contact, CancellationToken ct)
@@ -25,6 +26,12 @@ public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkou
         // A fare correction starts a new order; a late payment of the old order is caught
         // by verification because its amount no longer matches the final fare.
         var attempt = await checkouts.LatestAsync(tripId, ct);
+        var outcomes = await verifications.OutcomesAsync(tripId, ct);
+        if (outcomes.Any(o => o.Outcome is VerificationOutcome.AmountMismatch or VerificationOutcome.DuplicatePayment
+            or VerificationOutcome.Chargedback))
+            throw new PaymentException(409, "CHECKOUT_RECONCILIATION_REQUIRED", "A card payment for this trip needs review before another checkout.");
+        if (attempt is not null && outcomes.LastOrDefault(o => o.OrderId == attempt.OrderId).Outcome == VerificationOutcome.Pending)
+            throw new PaymentException(409, "CHECKOUT_AWAITING_VERIFICATION", "Your card payment is still being confirmed. Please wait a moment.");
         if (attempt is null || attempt.AmountMinor != amountMinor || attempt.Currency != PayHereSettings.Currency)
         {
             attempt = new(tripId, "goride-" + Guid.NewGuid().ToString("N"), amountMinor, PayHereSettings.Currency,

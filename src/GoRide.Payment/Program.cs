@@ -26,6 +26,7 @@ builder.Services.AddScoped<CheckoutStore>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<TripCompletionService>();
 builder.Services.AddScoped<VerificationStore>();
+builder.Services.AddScoped<PaymentVerificationService>();
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)

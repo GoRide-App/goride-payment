@@ -27,16 +27,19 @@ public sealed class VerificationStore(PaymentStore payments)
             new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(5), DateTimeKind.Utc)));
     }
 
-    // The latest outcome recorded for an order, used to hold back a new checkout while a
-    // payment is still pending at the provider.
-    public async Task<string?> LatestOutcomeAsync(string orderId, CancellationToken ct)
+    // Outcomes recorded for a trip, oldest first. Checkout uses them to hold back a new
+    // order while a payment is pending or a received payment still needs reconciliation.
+    public async Task<IReadOnlyList<(string OrderId, string Outcome)>> OutcomesAsync(string tripId, CancellationToken ct)
     {
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
         await using var command = new MySqlCommand(
-            "SELECT outcome FROM payment_verifications WHERE order_id = @order ORDER BY id DESC LIMIT 1", connection);
-        command.Parameters.AddWithValue("@order", orderId);
-        return await command.ExecuteScalarAsync(ct) as string;
+            "SELECT order_id, outcome FROM payment_verifications WHERE trip_id = @trip ORDER BY id", connection);
+        command.Parameters.AddWithValue("@trip", tripId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var outcomes = new List<(string, string)>();
+        while (await reader.ReadAsync(ct)) outcomes.Add((reader.GetString(0), reader.GetString(1)));
+        return outcomes;
     }
 
     public async Task<VerificationResult> RecordAsync(VerificationRecord notice,
