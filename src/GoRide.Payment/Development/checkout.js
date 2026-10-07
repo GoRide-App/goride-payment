@@ -24,6 +24,7 @@ function setBusy(value) {
   busy = value;
   byId("create").disabled = value;
   byId("checkout").disabled = value || !tripId;
+  byId("simulate").disabled = value || !tripId;
 }
 function showTrip(trip) {
   tripId = trip.tripId;
@@ -49,7 +50,7 @@ byId("trip-form").addEventListener("submit", async (event) => {
     const url = new URL(window.location.href);
     url.searchParams.delete("result");
     window.history.replaceState(null, "", url);
-    feedback("Test ride ready. Continue to Stripe when you’re ready.");
+    feedback("Test ride ready. Continue to PayHere when you’re ready.");
   } catch (error) { feedback(error.message, true); }
   finally { setBusy(false); }
 });
@@ -77,6 +78,19 @@ byId("checkout").addEventListener("click", async () => {
     form.submit();
   } catch (error) { feedback(error.message, true); setBusy(false); }
 });
+byId("simulate").addEventListener("click", async () => {
+  if (busy || !tripId) return;
+  setBusy(true);
+  feedback("Sending the signed PayHere notice…");
+  try {
+    const result = await api(`/trips/${encodeURIComponent(tripId)}/simulate-notify`, { statusCode: 2 });
+    showTrip(result.payment);
+    feedback(result.outcome === "Paid" || result.outcome === "AlreadyPaid"
+      ? "Verified. The ride is now marked paid."
+      : `PayHere notice recorded: ${result.outcome}. The ride was not marked paid.`, !["Paid", "AlreadyPaid"].includes(result.outcome));
+  } catch (error) { feedback(error.message, true); }
+  finally { setBusy(false); }
+});
 (async () => {
   try {
     const config = await api("/config");
@@ -86,12 +100,12 @@ byId("checkout").addEventListener("click", async () => {
   if (query.has("result")) {
     byId("return-notice").hidden = false;
     byId("return-notice").textContent = query.get("result") === "cancel"
-      ? "You returned from Stripe without finishing checkout. You can reopen the same checkout below."
-      : "You returned from Stripe. This page does not verify payment or mark the ride paid; provider verification is handled in SCRUM-103.";
+      ? "You returned from PayHere without finishing checkout. You can reopen the same order below."
+      : "You returned from PayHere. The ride is marked paid only when PayHere’s server notice is verified. Locally, use step 03 to send that notice.";
   }
   if (tripId) {
     setBusy(true);
-    try { showTrip(await api(`/trips/${encodeURIComponent(tripId)}`)); feedback("Your test ride is restored. Reopening checkout safely reuses an active session."); }
+    try { showTrip(await api(`/trips/${encodeURIComponent(tripId)}`)); feedback("Your test ride is restored. Reopening checkout reuses the same PayHere order."); }
     catch (error) { tripId = null; feedback(error.message, true); }
     finally { setBusy(false); }
   }
