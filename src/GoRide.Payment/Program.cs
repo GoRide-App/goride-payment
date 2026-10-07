@@ -1,5 +1,6 @@
 using GoRide.Payment.Auth;
 using GoRide.Payment.Checkout;
+using GoRide.Payment.Confirmation;
 using GoRide.Payment.Development;
 using GoRide.Payment.Data;
 using GoRide.Payment.Events;
@@ -27,6 +28,8 @@ builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<TripCompletionService>();
 builder.Services.AddScoped<VerificationStore>();
 builder.Services.AddScoped<PaymentVerificationService>();
+builder.Services.AddScoped<ConfirmationStore>();
+builder.Services.AddScoped<ConfirmationService>();
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)

@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS payment_verifications (
 -- the trip paid, so one verified card payment yields exactly one confirmation.
 CREATE TABLE IF NOT EXISTS payment_confirmations (
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
-    confirmation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+    -- VARCHAR, not CHAR(36): MySqlConnector maps CHAR(36) to Guid by default.
+    confirmation_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
     rider_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     amount_minor BIGINT NOT NULL,
     currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
