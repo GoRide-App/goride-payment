@@ -4,9 +4,9 @@ using GoRide.Payment.Services;
 namespace GoRide.Payment.Checkout;
 
 public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkouts,
-    ICheckoutProvider provider, StripeSettings settings, TimeProvider clock)
+    PayHereSettings settings, TimeProvider clock)
 {
-    public async Task<CheckoutRedirect> CreateAsync(string tripId, string riderId, CancellationToken ct)
+    public async Task<CheckoutForm> CreateAsync(string tripId, string riderId, RiderContact contact, CancellationToken ct)
     {
         PaymentRules.ValidateId(tripId, "tripId");
         await using var tripLock = await checkouts.LockAsync(tripId, ct);
@@ -17,79 +17,46 @@ public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkou
             throw new PaymentException(409, "CARD_NOT_SELECTED", "Select card payment before opening checkout.");
         if (payment.FinalFare <= 0 || payment.FinalFare * 100 > 99999999)
             throw new PaymentException(409, "CHECKOUT_AMOUNT_UNSUPPORTED", "This fare cannot be paid by card through checkout.");
-        settings.Validate();
+        var urls = settings.Urls(tripId);
         var amountMinor = decimal.ToInt64(payment.FinalFare * 100);
+
+        // Reuse the open order while the fare is unchanged, so a double click or a rider
+        // returning from PayHere never creates a second payable order for the same trip.
+        // A fare correction starts a new order; a late payment of the old order is caught
+        // by verification because its amount no longer matches the final fare.
         var attempt = await checkouts.LatestAsync(tripId, ct);
-        if (attempt is not null)
+        if (attempt is null || attempt.AmountMinor != amountMinor || attempt.Currency != PayHereSettings.Currency)
         {
-            var existing = await ResolveAsync(attempt, ct);
-            attempt = existing.Attempt;
-            EnsureUnpaid(existing.Session);
-            if (existing.Session.Status == "open")
-            {
-                if (attempt.AmountMinor == amountMinor) return Redirect(existing.Session);
-                await ConfirmExpiredAsync(attempt, ct);
-            }
+            attempt = new(tripId, "goride-" + Guid.NewGuid().ToString("N"), amountMinor, PayHereSettings.Currency,
+                urls.Return, urls.Cancel, clock.GetUtcNow());
+            await checkouts.InsertAsync(attempt, ct);
         }
-        var urls = settings.ReturnUrls(tripId);
-        attempt = new(tripId, "goride-" + Guid.NewGuid().ToString("N"), amountMinor, "lkr", urls.Success, urls.Cancel, clock.GetUtcNow());
-        await checkouts.InsertAsync(attempt, ct);
-        var created = await ResolveAsync(attempt, ct);
-        EnsureUnpaid(created.Session);
-        if (created.Session.Status != "open")
-            throw new PaymentException(409, "CHECKOUT_EXPIRED", "The checkout has expired. Retry to prepare another checkout.");
-        return Redirect(created.Session);
+        return Form(attempt, urls.Notify, contact);
     }
 
-    // Called while holding the same trip lock as CreateAsync. If Stripe's outcome
-    // is unknown or already complete, preserve the old fare for reconciliation.
-    public async Task ExpireForFareChangeAsync(string tripId, CancellationToken ct)
+    private CheckoutForm Form(CheckoutAttempt attempt, string notifyUrl, RiderContact contact)
     {
-        var attempt = await checkouts.LatestAsync(tripId, ct);
-        if (attempt is null) return;
-        var existing = await ResolveAsync(attempt, ct);
-        EnsureUnpaid(existing.Session);
-        if (existing.Session.Status == "open") await ConfirmExpiredAsync(existing.Attempt, ct);
-    }
-
-    private async Task<(CheckoutAttempt Attempt, HostedSession Session)> ResolveAsync(CheckoutAttempt attempt, CancellationToken ct)
-    {
-        if (attempt.SessionId is null)
+        var fields = new Dictionary<string, string>
         {
-            // Stripe may prune idempotency keys after 24h. Never recreate an unknown
-            // result outside that window: a paid session might otherwise be duplicated.
-            if (clock.GetUtcNow() - attempt.CreatedAt >= TimeSpan.FromHours(23))
-                throw new PaymentException(409, "CHECKOUT_RECONCILIATION_REQUIRED", "The earlier checkout outcome must be checked before another can be created.");
-            var created = await provider.CreateAsync(attempt, ct);
-            StripeCheckoutClient.ValidateSession(created, attempt);
-            await checkouts.SaveSessionAsync(attempt, created, ct);
-            attempt = attempt with { SessionId = created.Id };
-        }
-        // Creation retries can return a cached response. Retrieve current state so
-        // a session that completed since creation is never offered for another payment.
-        var session = await provider.GetAsync(attempt, ct);
-        StripeCheckoutClient.ValidateSession(session, attempt);
-        return (attempt, session);
-    }
-
-    private async Task ConfirmExpiredAsync(CheckoutAttempt attempt, CancellationToken ct)
-    {
-        var expired = await provider.ExpireAsync(attempt, ct);
-        StripeCheckoutClient.ValidateSession(expired, attempt);
-        if (expired.Status != "expired" || expired.PaymentStatus != "unpaid")
-            throw new PaymentException(409, "CHECKOUT_RECONCILIATION_REQUIRED", "The old checkout could not be safely expired before changing the fare.");
-    }
-
-    private static void EnsureUnpaid(HostedSession session)
-    {
-        if (session.Status == "complete" || session.PaymentStatus != "unpaid")
-            throw new PaymentException(409, "CHECKOUT_AWAITING_VERIFICATION", "This checkout has completed. Payment verification is required before any further attempt.");
-    }
-
-    private CheckoutRedirect Redirect(HostedSession session)
-    {
-        if (session.ExpiresAt <= clock.GetUtcNow().ToUnixTimeSeconds())
-            throw new PaymentException(409, "CHECKOUT_EXPIRED", "The checkout has expired. Retry shortly.");
-        return new(session.Id, session.Url!, session.AmountTotal / 100m, session.Currency.ToUpperInvariant(), DateTimeOffset.FromUnixTimeSeconds(session.ExpiresAt));
+            ["merchant_id"] = settings.MerchantId,
+            ["return_url"] = attempt.ReturnUrl,
+            ["cancel_url"] = attempt.CancelUrl,
+            ["notify_url"] = notifyUrl,
+            ["order_id"] = attempt.OrderId,
+            ["items"] = "GoRide completed ride",
+            ["currency"] = attempt.Currency,
+            ["amount"] = PayHereSignature.FormatAmount(attempt.AmountMinor),
+            ["first_name"] = contact.FirstName,
+            ["last_name"] = contact.LastName,
+            ["email"] = contact.Email,
+            ["phone"] = contact.Phone,
+            ["address"] = "Colombo",
+            ["city"] = "Colombo",
+            ["country"] = "Sri Lanka",
+            ["custom_1"] = attempt.TripId,
+            ["hash"] = PayHereSignature.CheckoutHash(settings.MerchantId, attempt.OrderId, attempt.AmountMinor,
+                attempt.Currency, settings.MerchantSecret)
+        };
+        return new(attempt.OrderId, PayHereSettings.CheckoutUrl, fields, attempt.AmountMinor / 100m, attempt.Currency);
     }
 }

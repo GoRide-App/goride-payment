@@ -37,7 +37,7 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
     public async Task<IActionResult> Checkout(string tripId, CheckoutRequest request, CancellationToken ct)
     {
         Response.Headers.CacheControl = "no-store";
-        return Ok(await checkout.CreateAsync(tripId, User.FindFirstValue("sub")!, ct));
+        return Ok(await checkout.CreateAsync(tripId, User.FindFirstValue("sub")!, RiderContact.From(User), ct));
     }
 }
 

@@ -24,7 +24,8 @@ public static class DevelopmentCheckout
                 return Results.NotFound();
             http.Response.Headers.CacheControl = "no-store";
             http.Response.Headers.XContentTypeOptions = "nosniff";
-            http.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+            // The page may only post its signed checkout form to the PayHere sandbox.
+            http.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action https://sandbox.payhere.lk";
             http.Response.Headers["Referrer-Policy"] = "no-referrer";
             if (HttpMethods.IsPost(http.Request.Method))
             {
@@ -38,9 +39,9 @@ public static class DevelopmentCheckout
         group.MapGet("", () => Asset("checkout.html", "text/html; charset=utf-8"));
         group.MapGet("/app.css", () => Asset("checkout.css", "text/css; charset=utf-8"));
         group.MapGet("/app.js", () => Asset("checkout.js", "text/javascript; charset=utf-8"));
-        group.MapGet("/config", (StripeSettings settings) =>
+        group.MapGet("/config", (PayHereSettings settings) =>
         {
-            try { settings.Validate(); return Results.Ok(new { configured = true, message = "Stripe test mode is ready." }); }
+            try { settings.Validate(); return Results.Ok(new { configured = true, message = "PayHere sandbox is ready." }); }
             catch (PaymentException ex) { return Results.Ok(new { configured = false, message = ex.Message }); }
         });
         group.MapPost("/trips", async (DevTripRequest request, TripCompletionService completion, PaymentStore payments, TimeProvider clock, CancellationToken ct) =>
@@ -66,7 +67,7 @@ public static class DevelopmentCheckout
             return payment?.RiderId == Rider ? Results.Ok(payment) : Results.NotFound();
         });
         group.MapPost("/trips/{tripId}/checkout", async (string tripId, Controllers.CheckoutRequest request, CheckoutService checkout, CancellationToken ct) =>
-            Results.Ok(await checkout.CreateAsync(tripId, Rider, ct)));
+            Results.Ok(await checkout.CreateAsync(tripId, Rider, RiderContact.Sandbox, ct)));
     }
 
     private static IResult Asset(string name, string contentType) => Results.Stream(

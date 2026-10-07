@@ -24,11 +24,8 @@ builder.Services.AddScoped<PaymentStore>();
 builder.Services.AddScoped<CheckoutStore>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<TripCompletionService>();
-builder.Services.AddSingleton<StripeSettings>();
+builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddScoped<ICheckoutProvider, StripeCheckoutClient>();
-builder.Services.AddHttpClient("Stripe", client => client.Timeout = TimeSpan.FromSeconds(15))
-    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, IdentitySessionHandler>(IdentitySessionHandler.SchemeName, _ => { });
 builder.Services.AddAuthorization();

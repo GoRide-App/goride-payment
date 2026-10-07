@@ -8,8 +8,7 @@ namespace GoRide.Payment.Checkout;
 
 public sealed class CheckoutStore(PaymentStore payments)
 {
-    // MySQL locks coordinate checkout/fare changes across processes. The intent is
-    // committed before calling Stripe, so a lost response is recoverable after a crash.
+    // MySQL locks coordinate checkout, fare changes and provider verification across processes.
     public async Task<TripLease> LockAsync(string tripId, CancellationToken ct)
     {
         var connection = payments.CreateConnection();
@@ -30,15 +29,16 @@ public sealed class CheckoutStore(PaymentStore payments)
     {
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
+        // idempotency_key holds the PayHere order_id; success_url holds the return URL.
         await using var command = new MySqlCommand("""
-            SELECT idempotency_key, amount_minor, currency, success_url, cancel_url, created_at, provider_session_id
+            SELECT idempotency_key, amount_minor, currency, success_url, cancel_url, created_at
             FROM payment_checkouts WHERE trip_id = @trip ORDER BY id DESC LIMIT 1
             """, connection);
         command.Parameters.AddWithValue("@trip", tripId);
         await using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
         return new(tripId, reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-            new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(5), DateTimeKind.Utc)), reader.IsDBNull(6) ? null : reader.GetString(6));
+            new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(5), DateTimeKind.Utc)));
     }
 
     public async Task InsertAsync(CheckoutAttempt attempt, CancellationToken ct)
@@ -50,27 +50,13 @@ public sealed class CheckoutStore(PaymentStore payments)
             VALUES (@trip, @key, @amount, @currency, @success, @cancel, @created)
             """, connection);
         command.Parameters.AddWithValue("@trip", attempt.TripId);
-        command.Parameters.AddWithValue("@key", attempt.IdempotencyKey);
+        command.Parameters.AddWithValue("@key", attempt.OrderId);
         command.Parameters.AddWithValue("@amount", attempt.AmountMinor);
         command.Parameters.AddWithValue("@currency", attempt.Currency);
-        command.Parameters.AddWithValue("@success", attempt.SuccessUrl);
+        command.Parameters.AddWithValue("@success", attempt.ReturnUrl);
         command.Parameters.AddWithValue("@cancel", attempt.CancelUrl);
         command.Parameters.AddWithValue("@created", attempt.CreatedAt.UtcDateTime);
         await command.ExecuteNonQueryAsync(ct);
-    }
-
-    public async Task SaveSessionAsync(CheckoutAttempt attempt, HostedSession session, CancellationToken ct)
-    {
-        await using var connection = payments.CreateConnection();
-        await connection.OpenAsync(ct);
-        await using var command = new MySqlCommand("""
-            UPDATE payment_checkouts SET provider_session_id = @session
-            WHERE idempotency_key = @key AND (provider_session_id IS NULL OR provider_session_id = @session)
-            """, connection);
-        command.Parameters.AddWithValue("@session", session.Id);
-        command.Parameters.AddWithValue("@key", attempt.IdempotencyKey);
-        if (await command.ExecuteNonQueryAsync(ct) != 1)
-            throw new PaymentException(409, "CHECKOUT_CONFLICT", "The checkout could not be recorded. Retry the same trip.");
     }
 }
 

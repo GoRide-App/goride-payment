@@ -59,11 +59,22 @@ byId("checkout").addEventListener("click", async () => {
   feedback("Preparing your secure checkout…");
   try {
     const checkout = await api(`/trips/${encodeURIComponent(tripId)}/checkout`, {});
-    const target = new URL(checkout.url);
-    if (target.protocol !== "https:" || target.hostname !== "checkout.stripe.com" || target.username || target.password || (target.port && target.port !== "443"))
+    if (checkout.actionUrl !== "https://sandbox.payhere.lk/pay/checkout")
       throw new Error("The checkout address could not be verified.");
-    feedback("Redirecting to Stripe test checkout…");
-    window.location.assign(target.href);
+    // PayHere takes a signed form post; the hash was made on the server.
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = checkout.actionUrl;
+    for (const [name, value] of Object.entries(checkout.fields)) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+      form.append(input);
+    }
+    document.body.append(form);
+    feedback("Opening the PayHere sandbox…");
+    form.submit();
   } catch (error) { feedback(error.message, true); setBusy(false); }
 });
 (async () => {
