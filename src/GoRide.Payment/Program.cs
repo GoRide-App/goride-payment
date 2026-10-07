@@ -4,6 +4,7 @@ using GoRide.Payment.Development;
 using GoRide.Payment.Data;
 using GoRide.Payment.Events;
 using GoRide.Payment.Services;
+using GoRide.Payment.Verification;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -24,6 +25,7 @@ builder.Services.AddScoped<PaymentStore>();
 builder.Services.AddScoped<CheckoutStore>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<TripCompletionService>();
+builder.Services.AddScoped<VerificationStore>();
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)
@@ -66,7 +68,11 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
 {
     await using var connection = store.CreateConnection();
     await connection.OpenAsync(ct);
-    await using var command = new MySqlCommand("SELECT 1 FROM payments LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id LIMIT 1", connection);
+    await using var command = new MySqlCommand("""
+        SELECT 1 FROM payments
+        LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id
+        LEFT JOIN payment_verifications ON payments.trip_id = payment_verifications.trip_id LIMIT 1
+        """, connection);
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });
 });

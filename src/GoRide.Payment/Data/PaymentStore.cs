@@ -106,7 +106,8 @@ public sealed class PaymentStore(IConfiguration configuration)
         return payment;
     }
 
-    private static async Task<PaymentRecord?> ReadAsync(MySqlConnection connection, MySqlTransaction? transaction,
+    // Shared with VerificationStore so provider notices update the payment in the same transaction.
+    internal static async Task<PaymentRecord?> ReadAsync(MySqlConnection connection, MySqlTransaction? transaction,
         string tripId, CancellationToken ct)
     {
         await using var command = new MySqlCommand(
@@ -117,7 +118,7 @@ public sealed class PaymentStore(IConfiguration configuration)
         return json is null ? null : JsonSerializer.Deserialize<PaymentRecord>(json, Json);
     }
 
-    private static async Task WriteAsync(MySqlConnection connection, MySqlTransaction transaction,
+    internal static async Task WriteAsync(MySqlConnection connection, MySqlTransaction transaction,
         PaymentRecord payment, CancellationToken ct)
     {
         await using var command = new MySqlCommand("UPDATE payments SET document = @document WHERE trip_id = @trip", connection, transaction);

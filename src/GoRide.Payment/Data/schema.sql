@@ -17,6 +17,28 @@ CREATE TABLE IF NOT EXISTS payment_checkouts (
     FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
 ) ENGINE=InnoDB;
 
+-- One row per provider notice (payment + status). The unique key makes PayHere
+-- redeliveries idempotent. Card holder name and expiry are deliberately not stored.
+CREATE TABLE IF NOT EXISTS payment_verifications (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    provider VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    provider_payment_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status_code SMALLINT NOT NULL,
+    order_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    amount_minor BIGINT NOT NULL,
+    currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    outcome VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    payment_method VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    card_masked VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    received_at DATETIME(6) NOT NULL,
+    UNIQUE KEY ux_provider_notice (provider, provider_payment_id, status_code),
+    INDEX ix_verification_order (order_id, id),
+    INDEX ix_verification_trip (trip_id, id),
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS processed_payment_events (
     event_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
