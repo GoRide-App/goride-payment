@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using System.Text.Json.Serialization;
 using GoRide.Payment.Checkout;
+using GoRide.Payment.Confirmation;
 using GoRide.Payment.Data;
 using GoRide.Payment.Models;
 using GoRide.Payment.Services;
@@ -100,6 +101,12 @@ public static class DevelopmentCheckout
             var result = await verification.VerifyAsync(PayHereNotice.From(form), ct);
             return Results.Ok(new { outcome = result.Outcome, payment = result.Payment });
         });
+        // SCRUM-104: the same confirmation the rider app reads, for the fixture rider only.
+        group.MapGet("/trips/{tripId}/confirmation", async (string tripId, ConfirmationService confirmations, CancellationToken ct) =>
+            Results.Ok(await confirmations.GetAsync(tripId, Rider, ct)));
+        group.MapPost("/trips/{tripId}/confirmation/acknowledge", async (string tripId, Controllers.AcknowledgeConfirmationRequest request,
+            ConfirmationService confirmations, CancellationToken ct) =>
+            Results.Ok(await confirmations.AcknowledgeAsync(tripId, Rider, request.ConfirmationId, ct)));
     }
 
     private static IResult Asset(string name, string contentType) => Results.Stream(

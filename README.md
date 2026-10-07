@@ -1,14 +1,14 @@
 # GoRide Payment
 
-SCRUM-101–103: a rider can select card payment after their trip completes, pay through the **PayHere sandbox** checkout, and the trip is marked paid only after PayHere's server notice is verified. The service uses .NET 10, MySQL 8 and direct ADO.NET queries. Checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
+SCRUM-101–104: a rider can select card payment after their trip completes, pay through the **PayHere sandbox** checkout, the trip is marked paid only after PayHere's server notice is verified, and the rider app then shows a one-time in-app confirmation. The service uses .NET 10, MySQL 8 and direct ADO.NET queries. Checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
 
 ## Run locally
 
 1. Create a `payment_db` MySQL database and a service user with SELECT, INSERT and UPDATE access to its tables.
-2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. Run it again when upgrading from SCRUM-101: it adds new tables (`payment_checkouts`, `payment_verifications`) without modifying existing ones. The application never creates or changes production schemas automatically.
+2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. Run it again when upgrading from SCRUM-101: it adds new tables (`payment_checkouts`, `payment_verifications`, `payment_confirmations`) without modifying existing ones. The application never creates or changes production schemas automatically.
 3. Set `ConnectionStrings__Payments`, `Identity__BaseUrl`, and `InternalServices__ApiKey` in the environment. `.env.example` lists the settings; `.env` is not loaded automatically. Alternatively use a gitignored `src/GoRide.Payment/appsettings.Development.json`.
 4. Run `dotnet run --project src/GoRide.Payment --urls http://localhost:8083`.
-5. `GET /health` checks the database and the payments, checkout and verification tables.
+5. `GET /health` checks the database and the payments, checkout, verification and confirmation tables.
 
 Use TLS for database and identity connections outside local development. No credentials are committed. A Docker image can be built with `docker build -t goride-payment .` and run on container port 8080 with these environment variables.
 
@@ -20,6 +20,8 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/{tripId}/select-method` | Accepts exactly `{ "method": "Card" }`; returns the pending payment |
 | POST | `/payments/{tripId}/checkout` | Accepts `{}`; returns the signed PayHere sandbox form for the trip's final fare |
 | POST | `/payments/payhere/notify` | PayHere's server-to-server notify URL (form encoded, verified by `md5sig`) |
+| GET | `/payments/{tripId}/confirmation` | The rider's in-app confirmation: `Confirmed` with the receipt, or `Pending` |
+| POST | `/payments/{tripId}/confirmation/acknowledge` | Accepts exactly `{ "confirmationId": "..." }`; records that the app showed it |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
 
 The get/select paths match the frontend's existing `payments.get` and `payments.selectMethod` contract. The checkout endpoint returns JSON (`orderId`, `actionUrl`, `fields`, `amount`, `currency`); the client builds a hidden form from `fields` and POSTs it to `actionUrl`. Route these paths through the same frontend origin so its identity session cookie reaches the service. The payment service verifies the cookie against identity-auth's `/api/me`; it never accepts a browser-supplied rider ID. Its HTTP client does not store cookies or follow redirects. Configure `Identity__BaseUrl` to the actual identity service. Direct cross-origin clients additionally require an allowed CORS origin and credentials.
@@ -97,6 +99,39 @@ Development assets and fixture endpoints exist only when **both** the environmen
 
 Provider references: [PayHere Checkout API](https://support.payhere.lk/api-&-mobile-sdk/checkout-api), [sandbox and testing](https://support.payhere.lk/sandbox-and-testing).
 
+## SCRUM-104: in-app confirmation on card success
+
+PayHere passes no payment status to `return_url`, so after the rider returns from checkout the app polls `GET /payments/{tripId}/confirmation` (`Cache-Control: no-store`):
+
+```json
+{
+  "status": "Confirmed",
+  "confirmation": {
+    "confirmationId": "4f7c2c9e-3b1a-4f0e-9d8a-2a6f1c0b7e51",
+    "tripId": "trip-123",
+    "amount": 725.50,
+    "currency": "LKR",
+    "method": "Card",
+    "cardBrand": "VISA",
+    "cardLast4": "1292",
+    "providerReference": "320027150501",
+    "paidAt": "2026-10-07T08:15:00+00:00",
+    "acknowledgedAt": null
+  },
+  "lastProviderOutcome": null
+}
+```
+
+While the payment is not verified the response is `{ "status": "Pending", "confirmation": null, "lastProviderOutcome": ... }`, where the last outcome (`Pending`, `Failed`, `Cancelled`, `AmountMismatch`, ...) lets the app explain a failed or held payment instead of waiting.
+
+The confirmation row in `payment_confirmations` is written in the **same transaction** that marks the trip `Paid` (SCRUM-103), keyed by trip. A payment is decided `Paid` only while the trip is unpaid under its row lock, so PayHere redeliveries, retries after a crash, or a second PayHere payment can never create another confirmation. The confirmed amount is the verified amount, which must equal the final fare. Only the masked card's last four digits and brand are exposed.
+
+After showing it, the app calls `POST /payments/{tripId}/confirmation/acknowledge` with the `confirmationId`. The first call records `acknowledgedAt`; repeats keep the first time, so the success screen is shown once even across devices.
+
+Errors: `INVALID_REQUEST` (400, invalid trip ID, unknown fields or malformed JSON), `INVALID_CONFIRMATION_ID` (400), `AUTHENTICATION_REQUIRED` (401), `PAYMENT_FORBIDDEN` (403, another rider's trip), `TRIP_NOT_COMPLETED`, `PAYMENT_NOT_CONFIRMED` and `CONFIRMATION_MISMATCH` (409), and `IDENTITY_UNAVAILABLE`/`PAYMENT_STORE_UNAVAILABLE` (503).
+
+The development page shows the same confirmation after **Simulate successful payment**, with a **Got it** button that acknowledges it.
+
 ## Kafka
 
 Enable `Kafka__Enabled=true` and set `Kafka__BootstrapServers` to consume `goride.trip.events` using the independent `goride-payment` consumer group. Event envelopes must match the example. Broker ACLs should permit only trusted trip/fare producers to write completion events. The internal HTTP endpoint and Kafka use the same transaction logic.
@@ -122,4 +157,4 @@ $env:PAYMENT_TEST_MYSQL = 'Server=127.0.0.1;Port=3306;User ID=root;Password=loca
 dotnet test GoRide.Payment.slnx --configuration Release --logger trx
 ```
 
-Story coverage: SCRUM-651–655 (card selection), SCRUM-656–663 (checkout, now on the PayHere sandbox) and SCRUM-665–667 (SCRUM-103 dev: verification endpoint and business logic, validation and structured errors, parameterised ADO.NET data access). SCRUM-668–671 (QA) and SCRUM-672–673 (CI/staging) follow; pushing this branch does not perform a staging deployment.
+Story coverage: SCRUM-651–655 (card selection), SCRUM-656–663 (checkout, now on the PayHere sandbox), SCRUM-665–667 (SCRUM-103 dev: verification endpoint and business logic, validation and structured errors, parameterised ADO.NET data access) and SCRUM-674–675 (SCRUM-104 dev: confirmation endpoints and business logic, validation and structured errors). QA (SCRUM-668–671, 676–677) and CI/staging (SCRUM-672–673, 678) follow; pushing these branches does not perform a staging deployment.

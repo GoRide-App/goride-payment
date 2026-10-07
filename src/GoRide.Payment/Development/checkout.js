@@ -78,6 +78,29 @@ byId("checkout").addEventListener("click", async () => {
     form.submit();
   } catch (error) { feedback(error.message, true); setBusy(false); }
 });
+// SCRUM-104: the in-app confirmation, read from the same service the rider app polls.
+let confirmationId = null;
+function showConfirmation(confirmation) {
+  confirmationId = confirmation.confirmationId;
+  byId("confirmed-amount").textContent = money.format(confirmation.amount);
+  byId("confirmed-card").textContent = [confirmation.cardBrand, confirmation.cardLast4 && `•••• ${confirmation.cardLast4}`].filter(Boolean).join(" ") || "Card";
+  byId("confirmed-reference").textContent = confirmation.providerReference;
+  byId("confirmed-at").textContent = new Date(confirmation.paidAt).toLocaleString();
+  byId("confirmed-ack").textContent = confirmation.acknowledgedAt ? new Date(confirmation.acknowledgedAt).toLocaleString() : "Not yet";
+  byId("acknowledge").disabled = Boolean(confirmation.acknowledgedAt);
+  byId("confirmation").hidden = false;
+}
+async function loadConfirmation() {
+  if (!tripId) return;
+  const view = await api(`/trips/${encodeURIComponent(tripId)}/confirmation`);
+  if (view.status === "Confirmed") showConfirmation(view.confirmation);
+  else byId("confirmation").hidden = true;
+}
+byId("acknowledge").addEventListener("click", async () => {
+  if (!tripId || !confirmationId) return;
+  try { showConfirmation(await api(`/trips/${encodeURIComponent(tripId)}/confirmation/acknowledge`, { confirmationId })); }
+  catch (error) { feedback(error.message, true); }
+});
 byId("simulate").addEventListener("click", async () => {
   if (busy || !tripId) return;
   setBusy(true);
@@ -85,6 +108,7 @@ byId("simulate").addEventListener("click", async () => {
   try {
     const result = await api(`/trips/${encodeURIComponent(tripId)}/simulate-notify`, { statusCode: 2 });
     showTrip(result.payment);
+    await loadConfirmation();
     feedback(result.outcome === "Paid" || result.outcome === "AlreadyPaid"
       ? "Verified. The ride is now marked paid."
       : `PayHere notice recorded: ${result.outcome}. The ride was not marked paid.`, !["Paid", "AlreadyPaid"].includes(result.outcome));
@@ -105,7 +129,7 @@ byId("simulate").addEventListener("click", async () => {
   }
   if (tripId) {
     setBusy(true);
-    try { showTrip(await api(`/trips/${encodeURIComponent(tripId)}`)); feedback("Your test ride is restored. Reopening checkout reuses the same PayHere order."); }
+    try { showTrip(await api(`/trips/${encodeURIComponent(tripId)}`)); await loadConfirmation(); feedback("Your test ride is restored. Reopening checkout reuses the same PayHere order."); }
     catch (error) { tripId = null; feedback(error.message, true); }
     finally { setBusy(false); }
   }
