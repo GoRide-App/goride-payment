@@ -54,10 +54,12 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
     public async Task<IActionResult> AcknowledgeConfirmation(string tripId, AcknowledgeConfirmationRequest request, CancellationToken ct)
     {
         Response.Headers.CacheControl = "no-store";
-        return Ok(await confirmations.AcknowledgeAsync(tripId, User.FindFirstValue("sub")!, request.ConfirmationId!, ct));
+        return Ok(await confirmations.AcknowledgeAsync(tripId, User.FindFirstValue("sub")!, request.ConfirmationId, ct));
     }
 }
 
+// Only the confirmation ID is accepted; the caller cannot set amounts, times or identity.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record AcknowledgeConfirmationRequest(string? ConfirmationId);
 
 // Reject caller-supplied fare, identity, status, and other unknown fields.
