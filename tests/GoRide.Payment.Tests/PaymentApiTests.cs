@@ -56,6 +56,30 @@ public sealed class PaymentApiTests
     }
 
     [MySqlFact]
+    public async Task CompletedTripCanSelectCashThroughHttpAndTransitionState()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var evt = PaymentRulesTests.Completion();
+        string id;
+        await using (var api = new PaymentApplication(db.ConnectionString))
+        using (var client = api.CreateClient())
+        {
+            var completed = await Complete(client, evt);
+            id = completed.Id;
+            client.DefaultRequestHeaders.Add("Cookie", "session=rider-1");
+            using var response = await client.PostAsJsonAsync($"/payments/{evt.TripId}/select-method", new { method = "Cash" });
+            Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+            var selected = (await response.Content.ReadFromJsonAsync<PaymentRecord>())!;
+            Assert.Equal(id, selected.Id);
+            Assert.Equal("Cash", selected.Method);
+            Assert.Equal(725.50m, selected.FinalFare);
+            Assert.Equal("AwaitingCash", selected.Status);
+            Assert.Null(selected.ProcessedAt);
+            Assert.Equal(0, selected.CardAttemptCount);
+        }
+    }
+
+    [MySqlFact]
     public async Task ParallelDeliveriesAndSelectionsProduceOnePayment()
     {
         await using var db = await TestDatabase.CreateAsync();
@@ -165,7 +189,7 @@ public sealed class PaymentApiTests
         var evt = PaymentRulesTests.Completion();
         await Complete(client, evt);
         client.DefaultRequestHeaders.Add("Cookie", "session=rider-1");
-        foreach (var method in new string?[] { null, "Cash", "card", "", "crypto" })
+        foreach (var method in new string?[] { null, "card", "", "crypto" })
             await AssertError(await client.PostAsJsonAsync($"/payments/{evt.TripId}/select-method", new { method }), 400, "INVALID_PAYMENT_METHOD");
         foreach (var body in new[] { "{", "null", "{\"method\":\"Card\",\"finalFare\":1}", "{\"method\":\"Card\",\"riderId\":\"other\"}" })
             await AssertError(await client.PostAsync($"/payments/{evt.TripId}/select-method", new StringContent(body, Encoding.UTF8, "application/json")), 400, "INVALID_REQUEST");

@@ -32,10 +32,25 @@ public sealed class PaymentRulesTests
     }
 
     [Fact]
-    public void DifferentRiderCannotSelectCard()
+    public void SelectCashPreservesAuthoritativeFareAndDoesNotCharge()
+    {
+        var payment = PaymentRules.ApplyCompletion(null, Completion());
+        var selected = PaymentRules.SelectCash(payment, "rider-1");
+        Assert.Equal("Cash", selected.Method);
+        Assert.Equal(725.50m, selected.FinalFare);
+        Assert.Equal(600m, selected.EstimatedFare);
+        Assert.Equal("AwaitingCash", selected.Status);
+        Assert.Equal(0, selected.CardAttemptCount);
+        Assert.Null(selected.ProcessedAt);
+        Assert.Equal(409, Assert.Throws<PaymentException>(() => PaymentRules.SelectCash(selected, "rider-1")).Status);
+    }
+
+    [Fact]
+    public void DifferentRiderCannotSelectCardOrCash()
     {
         var payment = PaymentRules.ApplyCompletion(null, Completion());
         Assert.Equal(403, Assert.Throws<PaymentException>(() => PaymentRules.SelectCard(payment, "other")).Status);
+        Assert.Equal(403, Assert.Throws<PaymentException>(() => PaymentRules.SelectCash(payment, "other")).Status);
     }
 
     [Theory]
@@ -43,10 +58,11 @@ public sealed class PaymentRulesTests
     [InlineData("Paid")]
     [InlineData("AwaitingCash")]
     [InlineData("Failed")]
-    public void NonPendingPaymentsCannotSelectCard(string status)
+    public void NonPendingPaymentsCannotSelectCardOrCash(string status)
     {
         var payment = PaymentRules.ApplyCompletion(null, Completion()) with { Status = status };
         Assert.Equal(409, Assert.Throws<PaymentException>(() => PaymentRules.SelectCard(payment, "rider-1")).Status);
+        Assert.Equal(409, Assert.Throws<PaymentException>(() => PaymentRules.SelectCash(payment, "rider-1")).Status);
     }
 
     [Theory]
