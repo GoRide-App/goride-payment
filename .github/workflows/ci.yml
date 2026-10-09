@@ -1,37 +1,23 @@
-name: Payment CI
+# Runs on every PR into dev/main and on direct pushes to those branches.
+# The actual steps live in ci-reusable.yml so cd.yml can run the exact same
+# checks before it deploys anything.
+
 on:
-  push:
   pull_request:
-  workflow_dispatch:
-permissions:
-  contents: read
+    branches: [dev,main]
+  push:
+    branches: [dev,main]
+  workflow_dispatch:  # Allows manual triggering of the workflow
+
+permissions:  # permission settings for the workflow
+  contents: read  # Allows the workflow to read the repository contents
+
+# A new push to the same PR cancels the run that is still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: ci-test-password
-          MYSQL_ROOT_HOST: "%"
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-test-password"
-          --health-interval=10s --health-timeout=5s --health-retries=12
-    env:
-      PAYMENT_TEST_MYSQL: "Server=127.0.0.1;Port=3306;User ID=root;Password=ci-test-password;SslMode=Disabled"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-      - run: dotnet restore GoRide.Payment.slnx
-      - run: dotnet build GoRide.Payment.slnx --configuration Release --no-restore
-      - run: dotnet test GoRide.Payment.slnx --configuration Release --no-build --logger "trx;LogFileName=payment.trx" --results-directory TestResults
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: payment-tests
-          path: TestResults/*.trx
-      - run: docker build -t goride-payment:ci .
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci-reusable.yml
