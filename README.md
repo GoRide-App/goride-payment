@@ -1,14 +1,14 @@
 # GoRide Payment
 
-SCRUM-101–104: a rider can select card payment after their trip completes, pay through the **PayHere sandbox** checkout, the trip is marked paid only after PayHere's server notice is verified, and the rider app then shows a one-time in-app confirmation. The service uses .NET 10, MySQL 8 and direct ADO.NET queries. Checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
+SCRUM-101–105: a rider can select card payment after their trip completes, pay through the **PayHere sandbox** checkout, the trip is marked paid only after PayHere's server notice is verified, the rider app then shows a one-time in-app confirmation, and the rider gets an email receipt (sent with Brevo's free plan). The service uses .NET 10, MySQL 8 and direct ADO.NET queries. Checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
 
 ## Run locally
 
 1. Create a `payment_db` MySQL database and a service user with SELECT, INSERT and UPDATE access to its tables.
-2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. Run it again when upgrading from SCRUM-101: it adds new tables (`payment_checkouts`, `payment_verifications`, `payment_confirmations`) without modifying existing ones. The application never creates or changes production schemas automatically.
+2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. Run it again when upgrading from SCRUM-101: it adds new tables (`payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`) without modifying existing ones. The application never creates or changes production schemas automatically.
 3. Set `ConnectionStrings__Payments`, `Identity__BaseUrl`, and `InternalServices__ApiKey` in the environment. `.env.example` lists the settings; `.env` is not loaded automatically. Alternatively use a gitignored `src/GoRide.Payment/appsettings.Development.json`.
 4. Run `dotnet run --project src/GoRide.Payment --urls http://localhost:8083`.
-5. `GET /health` checks the database and the payments, checkout, verification and confirmation tables.
+5. `GET /health` checks the database and the payments, checkout, verification, confirmation and receipt tables.
 
 Use TLS for database and identity connections outside local development. No credentials are committed. A Docker image can be built with `docker build -t goride-payment .` and run on container port 8080 with these environment variables.
 
@@ -22,6 +22,8 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/payhere/notify` | PayHere's server-to-server notify URL (form encoded, verified by `md5sig`) |
 | GET | `/payments/{tripId}/confirmation` | The rider's in-app confirmation: `Confirmed` with the receipt, or `Pending` |
 | POST | `/payments/{tripId}/confirmation/acknowledge` | Accepts exactly `{ "confirmationId": "..." }`; records that the app showed it |
+| GET | `/payments/{tripId}/receipt` | Whether the email receipt was sent (address masked) and whether it can be resent |
+| POST | `/payments/{tripId}/receipt/resend` | Accepts `{}` or no body; queues the receipt again (202) |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
 
 The get/select paths match the frontend's existing `payments.get` and `payments.selectMethod` contract. The checkout endpoint returns JSON (`orderId`, `actionUrl`, `fields`, `amount`, `currency`); the client builds a hidden form from `fields` and POSTs it to `actionUrl`. Route these paths through the same frontend origin so its identity session cookie reaches the service. The payment service verifies the cookie against identity-auth's `/api/me`; it never accepts a browser-supplied rider ID. Its HTTP client does not store cookies or follow redirects. Configure `Identity__BaseUrl` to the actual identity service. Direct cross-origin clients additionally require an allowed CORS origin and credentials.
@@ -132,6 +134,48 @@ Errors: `INVALID_REQUEST` (400, invalid trip ID, unknown fields or malformed JSO
 
 The development page shows the same confirmation after **Simulate successful payment**, with a **Got it** button that acknowledges it.
 
+## SCRUM-105: email payment receipt
+
+After a card payment is verified, the rider gets an email receipt with the verified amount, the fare breakdown, the card brand and last four digits, the PayHere reference, the trip reference, a receipt number and the payment time in Sri Lanka time.
+
+**Exactly once.** The receipt row in `payment_receipts` is written in the **same transaction** that marks the trip `Paid` (SCRUM-103), keyed by trip, so PayHere redeliveries, retries after a crash or a second payment never create a second receipt. The amount is read from the verified confirmation, so the receipt always matches the true final amount.
+
+**Address.** At checkout the rider's email from the verified identity session is saved in `payment_contacts`. PayHere's placeholder contact details are never stored or emailed. A rider without a deliverable email gets a `NoEmail` receipt instead of a send.
+
+**Delivery.** `payment_receipts` is an outbox. A background sender claims one due row at a time with a lease (`UPDATE ... LIMIT 1`, so several instances never take the same row), sends it and records the provider message ID. Transient failures retry after 30 s, 2 min, 10 min and 30 min. After 5 attempts, or when the provider permanently rejects the message, the receipt is `Failed`. A sender that crashes mid-send leaves an expired lease (2 min), and the row is claimed again.
+
+Statuses: `Pending`, `Sending`, `Retry`, `Sent`, `Failed`, `NoEmail`.
+
+```json
+{
+  "receiptId": "0b9a3e55-6f5e-4c55-9d0a-5d1f2c7c9a10",
+  "status": "Sent",
+  "recipient": "r***e@gmail.com",
+  "sentAt": "2026-10-09T10:00:04+00:00",
+  "attempts": 1,
+  "canResend": false,
+  "resendAvailableAt": "2026-10-09T10:01:04+00:00",
+  "resendsLeft": 3
+}
+```
+
+**Resend.** `POST /payments/{tripId}/receipt/resend` queues the same receipt again for the address captured at checkout. The request takes no fields, so a caller cannot send a receipt to another address. A resend is allowed once the last send has finished, 60 seconds after the last send or request, and at most 3 times per trip. The database update repeats these checks, so concurrent requests queue only one send.
+
+Errors: `INVALID_REQUEST` (400, invalid trip ID, unknown fields or malformed JSON), `AUTHENTICATION_REQUIRED` (401), `PAYMENT_FORBIDDEN` (403), `TRIP_NOT_COMPLETED`, `RECEIPT_NOT_AVAILABLE` (not paid yet), `RECEIPT_EMAIL_MISSING` and `RECEIPT_IN_PROGRESS` (409), `RECEIPT_RESEND_TOO_SOON` and `RECEIPT_RESEND_LIMIT` (429), and `IDENTITY_UNAVAILABLE`/`PAYMENT_STORE_UNAVAILABLE` (503). `RECEIPT_RESEND_TOO_SOON` includes a `Retry-After` header and `retryAfterSeconds` in the body.
+
+### Sending real email with Brevo (free)
+
+By default `Email__Provider=Log`: receipts are rendered and logged locally instead of sent. To send real email:
+
+1. Create a free account at [brevo.com](https://www.brevo.com) (300 emails a day).
+2. Under **Senders, Domains & Dedicated IPs**, add and verify the address receipts are sent from.
+3. Under **SMTP & API → API Keys**, create an API key.
+4. Set `Email__Provider=Brevo`, `Email__FromAddress` (the verified sender), optionally `Email__FromName`, and `Email__Brevo__ApiKey`, in the environment or the gitignored `appsettings.Development.json`. Never commit the key.
+
+Receipts are sent through Brevo's transactional API (`POST https://api.brevo.com/v3/smtp/email`) with an HTML body and a plain-text alternative. Brevo 4xx responses other than 429 are treated as permanent failures; 429, 5xx, timeouts and network errors are retried. `Receipts__DispatcherEnabled` (default `true`) and `Receipts__PollSeconds` (default 5) control the background sender.
+
+The development page has an optional **Receipt email** field on the test ride. After **Simulate successful payment** it shows the receipt status, a **Preview email** link with the exact email, and **Resend**.
+
 ## Kafka
 
 Enable `Kafka__Enabled=true` and set `Kafka__BootstrapServers` to consume `goride.trip.events` using the independent `goride-payment` consumer group. Event envelopes must match the example. Broker ACLs should permit only trusted trip/fare producers to write completion events. The internal HTTP endpoint and Kafka use the same transaction logic.
@@ -146,7 +190,7 @@ dotnet build GoRide.Payment.slnx --configuration Release --no-restore
 dotnet test GoRide.Payment.slnx --configuration Release --no-build
 ```
 
-Tests cover authorization, validation, exact amounts, concurrent checkout, order reuse across restarts, fare corrections, unsafe configuration, settlement guards, PayHere signature formulas and development-page isolation. HTTP tests exercise the real application and MySQL data access with a deterministic identity stub. They do not need real PayHere credentials. Dedicated verification tests (SCRUM-668–671) belong to QA.
+Tests cover authorization, validation, exact amounts, concurrent checkout, order reuse across restarts, fare corrections, unsafe configuration, settlement guards, PayHere signature formulas, development-page isolation and receipts (one per paid trip under redelivery, retry backoff, lease recovery, resend limits, email validation and rendering). HTTP tests exercise the real application and MySQL data access with a deterministic identity stub. They do not need real PayHere credentials. Dedicated verification tests (SCRUM-668–671) belong to QA.
 
 Set `PAYMENT_TEST_MYSQL` to a **disposable local/CI MySQL administrator connection** before running the HTTP/database tests. Each test creates and removes its own randomly named `payment_test_...` database; it does not use `payment_db`. If this variable is absent, database tests are explicitly skipped. The GitHub Actions workflow always supplies a fresh MySQL service and runs build, all tests, artifact upload and Docker build on every branch push and PR.
 

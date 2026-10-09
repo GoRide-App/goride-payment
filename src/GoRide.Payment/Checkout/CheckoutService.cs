@@ -40,7 +40,7 @@ public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkou
         }
         // SCRUM-105: remember the verified email for the receipt sent once the payment is verified.
         if (contact.EmailVerified)
-            await receipts.SaveContactAsync(tripId, riderId, contact.Email, contact.DisplayName, clock.GetUtcNow(), ct);
+            await receipts.SaveContactAsync(tripId, riderId, contact.Email, contact.ReceiptName, clock.GetUtcNow(), ct);
         return Form(attempt, urls.Notify, contact);
     }
 

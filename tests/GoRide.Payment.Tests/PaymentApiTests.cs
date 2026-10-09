@@ -257,8 +257,10 @@ internal sealed class PaymentApplication(string connectionString,
             ["PayHere:ReturnUrl"] = "https://goride.test/return",
             ["PayHere:CancelUrl"] = "https://goride.test/cancel",
             ["PayHere:NotifyUrl"] = "https://goride.test/payments/payhere/notify",
-            // Tests drive receipt delivery explicitly; no background sender.
-            ["Receipts:DispatcherEnabled"] = "false"
+            // Tests drive receipt delivery explicitly; no background sender, and never real email
+            // even if local Development settings configure Brevo.
+            ["Receipts:DispatcherEnabled"] = "false",
+            ["Email:Provider"] = "Log"
         };
         if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
@@ -293,10 +295,30 @@ internal sealed class IdentityStub : HttpMessageHandler
     {
         var cookie = request.Headers.GetValues("Cookie").Single();
         if (cookie == "session=unavailable") throw new HttpRequestException("Identity offline");
-        var user = cookie switch { "session=rider-1" => "rider-1", "session=other" => "other", _ => null };
-        return Task.FromResult(user is null ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
-            : new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { userId = user }) });
+        // rider-1-email is the same rider with a verified email on the account (SCRUM-105).
+        object? session = cookie switch
+        {
+            "session=rider-1" => new { userId = "rider-1" },
+            "session=rider-1-email" => new { userId = "rider-1", name = "Rider One", email = TestRider.Email },
+            "session=other" => new { userId = "other" },
+            _ => null
+        };
+        return Task.FromResult(session is null ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(session) });
     }
+}
+
+internal static class TestRider
+{
+    public const string Email = "rider.one@goride.lk";
+}
+
+// A clock the tests move by hand, for retry backoff and resend cooldowns.
+internal sealed class ManualClock(DateTimeOffset start) : TimeProvider
+{
+    private DateTimeOffset now = start;
+    public override DateTimeOffset GetUtcNow() => now;
+    public void Advance(TimeSpan by) => now += by;
 }
 
 internal sealed class TestDatabase : IAsyncDisposable

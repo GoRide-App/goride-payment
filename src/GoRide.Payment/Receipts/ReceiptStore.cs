@@ -122,24 +122,41 @@ public sealed class ReceiptStore(PaymentStore payments)
             if (await claim.ExecuteNonQueryAsync(ct) == 0) return null;
         }
 
+        var claimed = await ReadContentAsync(connection, "r.lease_token = @value", token, ct);
+        return claimed is { } row ? (row.Content, row.Attempts, token) : null;
+    }
+
+    // The receipt as it was (or will be) emailed; used by the local preview.
+    public async Task<ReceiptContent?> GetContentAsync(string tripId, CancellationToken ct)
+    {
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        return (await ReadContentAsync(connection, "r.trip_id = @value", tripId, ct))?.Content;
+    }
+
+    // The amount comes from the verified confirmation, which equals the final fare at payment time.
+    // filter is one of the fixed conditions above, never caller input.
+    private static async Task<(ReceiptContent Content, int Attempts)?> ReadContentAsync(MySqlConnection connection,
+        string filter, string value, CancellationToken ct)
+    {
         string tripId, receiptId, recipient, currency, reference;
         string? name, brand, card;
         long amount;
         int attempts;
         DateTime paidAt;
-        await using (var read = new MySqlCommand("""
+        await using (var read = new MySqlCommand($"""
             SELECT r.trip_id, r.receipt_id, r.recipient, r.recipient_name, r.attempts,
                    c.amount_minor, c.currency, c.payment_method, c.card_masked, c.provider_payment_id, c.paid_at
             FROM payment_receipts r JOIN payment_confirmations c ON c.trip_id = r.trip_id
-            WHERE r.lease_token = @token
+            WHERE {filter}
             """, connection))
         {
-            read.Parameters.AddWithValue("@token", token);
+            read.Parameters.AddWithValue("@value", value);
             await using var reader = await read.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct)) return null;
             tripId = reader.GetString(0);
             receiptId = Convert.ToString(reader.GetValue(1), System.Globalization.CultureInfo.InvariantCulture)!;
-            recipient = reader.GetString(2);
+            recipient = reader.IsDBNull(2) ? "" : reader.GetString(2);
             name = reader.IsDBNull(3) ? null : reader.GetString(3);
             attempts = reader.GetInt32(4);
             amount = reader.GetInt64(5);
@@ -152,7 +169,7 @@ public sealed class ReceiptStore(PaymentStore payments)
         var payment = await PaymentStore.ReadAsync(connection, null, tripId, ct);
         var last4 = card is { Length: >= 4 } && card[^4..].All(char.IsAsciiDigit) ? card[^4..] : null;
         return (new ReceiptContent(receiptId, tripId, recipient, name, amount, currency, brand, last4, reference,
-            new DateTimeOffset(DateTime.SpecifyKind(paidAt, DateTimeKind.Utc)), payment?.Breakdown), attempts, token);
+            new DateTimeOffset(DateTime.SpecifyKind(paidAt, DateTimeKind.Utc)), payment?.Breakdown), attempts);
     }
 
     public async Task MarkSentAsync(string tripId, string token, string provider, string messageId, DateTimeOffset at, CancellationToken ct)

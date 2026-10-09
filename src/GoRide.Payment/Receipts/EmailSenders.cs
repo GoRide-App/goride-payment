@@ -80,6 +80,9 @@ public sealed class LogEmailSender(ILogger<LogEmailSender> logger) : IEmailSende
 
     public Task<string> SendAsync(EmailMessage message, CancellationToken ct)
     {
+        // Keeps only recent messages so a long-running local server does not grow without bound.
+        if (Sent.Count >= 200)
+            foreach (var key in Sent.Keys.Take(Sent.Count - 199)) Sent.TryRemove(key, out _);
         Sent[message.ReferenceId] = message;
         logger.LogInformation("Receipt email (log provider) to {Recipient}: {Subject}", ReceiptRules.MaskEmail(message.To), message.Subject);
         return Task.FromResult("log-" + Guid.NewGuid().ToString("N"));

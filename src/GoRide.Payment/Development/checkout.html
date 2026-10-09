@@ -10,9 +10,9 @@
 <body>
   <header class="topbar"><a class="brand" href="/dev/payments" aria-label="GoRide test checkout"><span class="brand-mark">G</span> GoRide<span class="brand-divider"></span><span class="workspace">Developer tools</span></a><span class="test-badge"><span></span> PayHere sandbox</span></header>
   <main>
-    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-103–104</div>
+    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-103–105</div>
     <h1>A completed ride.<br>A verified payment.</h1>
-    <p class="intro">Create a test ride, open the PayHere sandbox checkout, then confirm the payment the way PayHere’s server would. No real money moves.</p>
+    <p class="intro">Create a test ride, open the PayHere sandbox checkout, then confirm the payment the way PayHere’s server would. The email receipt follows on its own. No real money moves.</p>
     <div id="return-notice" class="notice" role="status" hidden></div>
     <div class="grid">
       <section class="card setup" aria-labelledby="setup-title">
@@ -23,6 +23,9 @@
           <label for="fare">Final fare</label>
           <div class="amount-input"><span>LKR</span><input id="fare" name="fare" type="number" min="0.01" max="999999.99" step="0.01" value="725.50" required inputmode="decimal" aria-describedby="fare-help"></div>
           <p class="field-help" id="fare-help">The saved final fare is signed into the PayHere order in LKR.</p>
+          <label for="email">Receipt email <span class="optional">Optional</span></label>
+          <div class="text-input"><input id="email" name="email" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com" aria-describedby="email-help"></div>
+          <p class="field-help" id="email-help">Stands in for the email on the rider’s GoRide account. The receipt is sent here once the payment is verified.</p>
           <button id="create" class="button secondary" type="submit">Create test ride <span aria-hidden="true">↗</span></button>
         </form>
         <div class="divider"></div>
@@ -54,11 +57,22 @@
           <dl><div><dt>Card</dt><dd id="confirmed-card">—</dd></div><div><dt>PayHere reference</dt><dd id="confirmed-reference">—</dd></div><div><dt>Paid at</dt><dd id="confirmed-at">—</dd></div><div><dt>Shown to rider</dt><dd id="confirmed-ack">Not yet</dd></div></dl>
           <button id="acknowledge" class="button secondary" type="button">Got it <span aria-hidden="true">✓</span></button>
         </section>
+        <section class="card receipt" id="email-receipt" aria-labelledby="email-receipt-title" hidden>
+          <div class="receipt-heading"><span class="tiny-mark">@</span><span class="pill" id="receipt-state">QUEUED</span></div>
+          <h2 id="email-receipt-title">Email receipt</h2>
+          <p class="muted">Sent once per paid ride (SCRUM-105)</p>
+          <dl><div><dt>Sent to</dt><dd id="receipt-to">—</dd></div><div><dt>Delivery</dt><dd id="receipt-delivery">—</dd></div><div><dt>Sent at</dt><dd id="receipt-sent-at">—</dd></div><div><dt>Resends left</dt><dd id="receipt-resends">—</dd></div></dl>
+          <div class="receipt-actions">
+            <a id="receipt-preview" class="button secondary" href="#" target="_blank" rel="noopener">Preview email <span aria-hidden="true">↗</span></a>
+            <button id="resend" class="button secondary" type="button" disabled>Resend <span aria-hidden="true">↻</span></button>
+          </div>
+          <p id="receipt-note" class="feedback" role="status" aria-live="polite"></p>
+        </section>
         <section class="test-card" aria-labelledby="test-card-title"><div class="test-card-title"><h3 id="test-card-title">A card for your test drive</h3><span>VISA</span></div><p class="card-number">4916 2175 0161 1292</p><p>Use any future expiry date and any three-digit CVC on the sandbox page.</p><a href="https://support.payhere.lk/sandbox-and-testing" target="_blank" rel="noreferrer">More PayHere sandbox cards ↗</a></section>
       </aside>
     </div>
     <div id="configuration" class="configuration" role="status">Checking PayHere configuration…</div>
-    <footer><span class="footer-dot"></span> Local development only <span class="footer-separator">·</span> A ride is marked paid only after PayHere’s notice is verified (SCRUM-103).</footer>
+    <footer><span class="footer-dot"></span> Local development only <span class="footer-separator">·</span> A ride is marked paid only after PayHere’s notice is verified (SCRUM-103). One receipt email per paid ride (SCRUM-105).</footer>
   </main>
 </body>
 </html>

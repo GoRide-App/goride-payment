@@ -17,7 +17,8 @@ public sealed record CheckoutForm(string OrderId, string ActionUrl, IReadOnlyDic
 // sandbox placeholders fill anything the identity service does not provide.
 // EmailVerified is true only when Email came from the identity session; only then is it
 // stored for the SCRUM-105 email receipt (placeholders are never emailed).
-public sealed record RiderContact(string FirstName, string LastName, string Email, string Phone, bool EmailVerified = false)
+public sealed record RiderContact(string FirstName, string LastName, string Email, string Phone,
+    bool EmailVerified = false, string? ReceiptName = null)
 {
     public static RiderContact From(ClaimsPrincipal user)
     {
@@ -29,12 +30,12 @@ public sealed record RiderContact(string FirstName, string LastName, string Emai
             Clean(parts.ElementAtOrDefault(1), "Rider"),
             Clean(email, "rider@goride.lk"),
             Clean(user.FindFirstValue("phone_number"), "0770000000"),
-            Receipts.ReceiptRules.IsDeliverableEmail(email));
+            Receipts.ReceiptRules.IsDeliverableEmail(email),
+            // The receipt greets the rider by name only when identity provided one.
+            name.Length is > 0 and <= 100 && !name.Any(char.IsControl) ? name : null);
     }
 
     public static RiderContact Sandbox { get; } = new("GoRide", "Rider", "rider@goride.lk", "0770000000");
-
-    public string DisplayName => $"{FirstName} {LastName}".Trim();
 
     private static string Clean(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) || value.Length > 100 || value.Any(char.IsControl) ? fallback : value.Trim();
