@@ -9,7 +9,7 @@ namespace GoRide.Payment.Receipts;
 public sealed record ReceiptContent(
     string ReceiptId, string TripId, string Recipient, string? RecipientName,
     long AmountMinor, string Currency, string? CardBrand, string? CardLast4,
-    string ProviderReference, DateTimeOffset PaidAt, FareBreakdown? Breakdown);
+    string ProviderReference, DateTimeOffset PaidAt, FareBreakdown? Breakdown, string Provider = "PayHere");
 
 public static class ReceiptRenderer
 {
@@ -50,11 +50,11 @@ public static class ReceiptRenderer
         AppendRow(html, "Total", total, true);
         AppendRow(html, "Paid with", card, false);
         AppendRow(html, "Paid on", paidAt, false);
-        AppendRow(html, "PayHere reference", receipt.ProviderReference, false);
+        AppendRow(html, ReferenceLabel(receipt), receipt.ProviderReference, false);
         AppendRow(html, "Trip reference", receipt.TripId, false);
         AppendRow(html, "Receipt number", receipt.ReceiptId, false);
         html.Append("</table>");
-        html.Append("<p style=\"margin:20px 0 0;font-size:12px;color:#6e6e73\">This receipt was sent because a card payment for your GoRide trip was confirmed by PayHere. Keep it for your records.</p>");
+        html.Append($"<p style=\"margin:20px 0 0;font-size:12px;color:#6e6e73\">{E(Footer(receipt))}</p>");
         html.Append("</td></tr></table></td></tr></table></body></html>");
 
         var text = new StringBuilder();
@@ -63,12 +63,20 @@ public static class ReceiptRenderer
         text.AppendLine($"Total paid: {total}")
             .AppendLine($"Paid with: {card}")
             .AppendLine($"Paid on: {paidAt}")
-            .AppendLine($"PayHere reference: {receipt.ProviderReference}")
+            .AppendLine($"{ReferenceLabel(receipt)}: {receipt.ProviderReference}")
             .AppendLine($"Trip reference: {receipt.TripId}")
             .AppendLine($"Receipt number: {receipt.ReceiptId}");
 
         return new(receipt.Recipient, receipt.RecipientName, subject, html.ToString(), text.ToString(), receipt.ReceiptId);
     }
+
+    // In-app demo card payments are not PayHere payments, so they say so.
+    private static string ReferenceLabel(ReceiptContent receipt) =>
+        receipt.Provider == "PayHere" ? "PayHere reference" : "Payment reference";
+
+    private static string Footer(ReceiptContent receipt) => receipt.Provider == "PayHere"
+        ? "This receipt was sent because a card payment for your GoRide trip was confirmed by PayHere. Keep it for your records."
+        : "This receipt was sent because a card payment for your GoRide trip was successful. Keep it for your records.";
 
     public static string Format(decimal amount, string currency) =>
         currency + " " + amount.ToString("#,##0.00", Money);
