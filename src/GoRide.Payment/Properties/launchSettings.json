@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "Payment Sandbox": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:8083",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "DevelopmentCheckout__Enabled": "true"
+      }
+    }
+  }
+}

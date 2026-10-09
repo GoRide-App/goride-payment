@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using GoRide.Payment.Services;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 
 namespace GoRide.Payment.Auth;
@@ -18,6 +19,7 @@ public sealed class IdentitySessionHandler(IOptionsMonitor<AuthenticationSchemeO
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
+        if (Context.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is not null) return AuthenticateResult.NoResult();
         if (!Request.Headers.TryGetValue("Cookie", out var cookie)) return AuthenticateResult.NoResult();
         using var request = new HttpRequestMessage(HttpMethod.Get, "api/me");
         request.Headers.TryAddWithoutValidation("Cookie", cookie.ToString());

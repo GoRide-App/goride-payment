@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using GoRide.Payment.Data;
+using GoRide.Payment.Checkout;
 using GoRide.Payment.Models;
 using GoRide.Payment.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -9,7 +9,7 @@ namespace GoRide.Payment.Controllers;
 
 [ApiController]
 [Route("internal/trip-events")]
-public sealed class TripEventsController(PaymentStore store, IConfiguration configuration) : ControllerBase
+public sealed class TripEventsController(TripCompletionService store, IConfiguration configuration) : ControllerBase
 {
     [HttpPost]
     public async Task<IActionResult> Complete(TripCompletedEvent evt, CancellationToken ct)

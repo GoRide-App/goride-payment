@@ -239,21 +239,42 @@ public sealed class PaymentApiTests
     }
 }
 
-internal sealed class PaymentApplication(string connectionString) : WebApplicationFactory<Program>
+internal sealed class PaymentApplication(string connectionString, HttpMessageHandler? stripe = null,
+    string environment = "Testing", Dictionary<string, string?>? settings = null,
+    TimeProvider? clock = null, IPAddress? remoteIp = null) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Testing");
-        builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+        builder.UseEnvironment(environment);
+        var values = new Dictionary<string, string?>
         {
             ["ConnectionStrings:Payments"] = connectionString,
             ["InternalServices:ApiKey"] = "test-service-key",
             ["Kafka:Enabled"] = "false",
-            ["Identity:BaseUrl"] = "http://identity.test/"
-        }));
-        builder.ConfigureServices(services => services.AddHttpClient("Identity")
-            .ConfigurePrimaryHttpMessageHandler(() => new IdentityStub()));
+            ["Identity:BaseUrl"] = "http://identity.test/",
+            ["Stripe:SecretKey"] = "sk_test_automated_placeholder",
+            ["Stripe:SuccessUrl"] = "https://goride.test/return",
+            ["Stripe:CancelUrl"] = "https://goride.test/cancel"
+        };
+        if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
+        builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
+        builder.ConfigureServices(services =>
+        {
+            services.AddHttpClient("Identity").ConfigurePrimaryHttpMessageHandler(() => new IdentityStub());
+            if (stripe is not null) services.AddHttpClient("Stripe").ConfigurePrimaryHttpMessageHandler(() => stripe);
+            if (clock is not null) services.AddSingleton(clock);
+            services.AddSingleton<IStartupFilter>(new RemoteAddressFilter(remoteIp ?? IPAddress.Loopback));
+        });
     }
+}
+
+internal sealed class RemoteAddressFilter(IPAddress address) : IStartupFilter
+{
+    public Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> Configure(Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> next) => app =>
+    {
+        app.Use(nextMiddleware => async context => { context.Connection.RemoteIpAddress = address; await nextMiddleware(context); });
+        next(app);
+    };
 }
 
 internal sealed class IdentityStub : HttpMessageHandler
@@ -295,11 +316,20 @@ internal sealed class TestDatabase : IAsyncDisposable
 
     public async Task<long> Count(string table)
     {
-        if (table is not ("payments" or "processed_payment_events")) throw new ArgumentException("Unknown table.");
+        if (table is not ("payments" or "processed_payment_events" or "payment_checkouts")) throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();
         await using var command = new MySqlCommand($"SELECT COUNT(*) FROM {table}", connection);
         return Convert.ToInt64(await command.ExecuteScalarAsync());
+    }
+
+    public async Task ExecuteAsync(string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var connection = new MySqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new MySqlCommand(sql, connection);
+        foreach (var parameter in parameters) command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        await command.ExecuteNonQueryAsync();
     }
 
     public async ValueTask DisposeAsync()

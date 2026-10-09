@@ -10,5 +10,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Data/schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Development/*.html;Development/*.css;Development/*.js" />
   </ItemGroup>
 </Project>

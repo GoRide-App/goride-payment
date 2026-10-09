@@ -40,7 +40,24 @@ public sealed class PaymentStore(IConfiguration configuration)
         return selected;
     }
 
-    public async Task<PaymentRecord> CompleteAsync(TripCompletedEvent evt, CancellationToken ct)
+    public async Task<PaymentRecord?> FindProcessedEventAsync(TripCompletedEvent evt, CancellationToken ct)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(evt, Json)));
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var command = new MySqlCommand("SELECT trip_id, payload_hash FROM processed_payment_events WHERE event_id = @event", connection);
+        command.Parameters.AddWithValue("@event", evt.EventId);
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+        {
+            if (!await reader.ReadAsync(ct)) return null;
+            if (reader.GetString(0) != evt.TripId || reader.GetString(1) != hash)
+                throw new PaymentException(409, "EVENT_ID_CONFLICT", "eventId has already been used with different data.");
+        }
+        return await ReadAsync(connection, null, evt.TripId!, ct);
+    }
+
+    // Entry points must use TripCompletionService so fare changes and checkout share a trip lock.
+    internal async Task<PaymentRecord> CompleteAsync(TripCompletedEvent evt, CancellationToken ct)
     {
         PaymentRules.ValidateCompletion(evt);
         var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(evt, Json)));
