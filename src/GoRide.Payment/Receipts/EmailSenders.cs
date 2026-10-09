@@ -59,7 +59,12 @@ public sealed class BrevoEmailSender(IHttpClientFactory clients, EmailSettings s
                 using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
                 return json.RootElement.TryGetProperty("messageId", out var id) ? id.GetString() ?? "brevo" : "brevo";
             }
-            // 4xx (except throttling) will not succeed on retry; provider error bodies are not kept.
+            // 401/403 mean the key or this server's IP is not allowed (an account setting), so the
+            // receipt is retried until that is fixed. Other 4xx (except throttling) reject this
+            // message and will not succeed on retry. Provider error bodies are not kept.
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                throw new EmailDeliveryException(
+                    $"Brevo refused the API key or this server's IP ({(int)response.StatusCode}). Check the key and Brevo's authorised IPs.", false);
             var permanent = (int)response.StatusCode is >= 400 and < 500 && response.StatusCode != HttpStatusCode.TooManyRequests;
             throw new EmailDeliveryException($"Brevo rejected the email ({(int)response.StatusCode}).", permanent);
         }
