@@ -64,6 +64,8 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     var (status, code, message) = error switch
     {
         PaymentException p => (p.Status, p.Code, p.Message),
+        // Minimal API binding failures (unknown fields, malformed JSON) in Development.
+        BadHttpRequestException b => (b.StatusCode, "INVALID_REQUEST", "The request is invalid."),
         MySqlException => (503, "PAYMENT_STORE_UNAVAILABLE", "The payment store is unavailable. Please try again."),
         _ => (500, "INTERNAL_ERROR", "The request could not be completed.")
     };

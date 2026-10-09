@@ -228,6 +228,9 @@ public sealed class ReceiptApiTests
         Assert.Equal("text/html", preview.Content.Headers.ContentType?.MediaType);
         Assert.Contains("sandbox", preview.Headers.GetValues("Content-Security-Policy").Single());
         Assert.Contains("LKR 725.50", await preview.Content.ReadAsStringAsync());
+        // Unknown fields are a structured 400 here too, never a server error.
+        await CheckoutApiTests.Error(await client.PostAsJsonAsync($"/dev/payments/trips/{trip}/receipt/resend", new { email = "attacker@evil.test" }), 400, "INVALID_REQUEST");
+        await CheckoutApiTests.Error(await client.PostAsJsonAsync("/dev/payments/trips", new { finalFare = 725.50m, riderId = "someone" }), 400, "INVALID_REQUEST");
     }
 
     private static HttpClient EmailRider(PaymentApplication app)
