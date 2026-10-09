@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json.Serialization;
+using GoRide.Payment.Cards;
 using GoRide.Payment.Data;
 using GoRide.Payment.Checkout;
 using GoRide.Payment.Confirmation;
@@ -15,8 +16,52 @@ namespace GoRide.Payment.Controllers;
 [Authorize]
 [Route("payments")]
 public sealed class PaymentsController(PaymentStore store, CheckoutService checkout, ConfirmationService confirmations,
-    ReceiptService receipts) : ControllerBase
+    ReceiptService receipts, CardPaymentService cardPayments, PaymentStatusService statuses,
+    IConfiguration configuration, IWebHostEnvironment environment) : ControllerBase
 {
+    // Shared by the trip's rider and driver; JSON null until the completed trip arrives.
+    [HttpGet("{tripId}/status")]
+    public async Task<IActionResult> Status(string tripId, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return new JsonResult(await statuses.GetAsync(tripId, User.FindFirstValue("sub")!, ct)) { StatusCode = 200 };
+    }
+
+    // Charges a saved demo card in-app. Declines return 402 with a code the app explains.
+    [HttpPost("{tripId}/pay")]
+    public async Task<IActionResult> Pay(string tripId, PayRequest request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await cardPayments.PayAsync(tripId, User.FindFirstValue("sub")!, request.CardId, RiderContact.From(User), ct));
+    }
+
+    [HttpPost("{tripId}/cash")]
+    public async Task<IActionResult> ChooseCash(string tripId,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CashRequest? request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await statuses.ChooseCashAsync(tripId, User.FindFirstValue("sub")!, ct));
+    }
+
+    // The driver confirms the rider's cash; only then is the trip paid.
+    [HttpPost("{tripId}/cash/confirm")]
+    public async Task<IActionResult> ConfirmCash(string tripId,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CashRequest? request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await statuses.ConfirmCashAsync(tripId, User.FindFirstValue("sub")!, ct));
+    }
+
+    // Local demo only (Development with DemoTrips:Enabled): records a simulated ride the
+    // trip service never saw, so it can be paid and receipted like a real one.
+    [HttpPost("demo-completions")]
+    public async Task<IActionResult> CompleteDemoTrip(DemoCompletionRequest request, CancellationToken ct)
+    {
+        if (!environment.IsDevelopment() || !configuration.GetValue<bool>("DemoTrips:Enabled")) return NotFound();
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await statuses.CompleteDemoTripAsync(request.TripId, request.FinalFare, User.FindFirstValue("sub")!, ct));
+    }
+
     [HttpGet("{tripId}")]
     public async Task<IActionResult> Get(string tripId, CancellationToken ct)
     {
@@ -76,6 +121,16 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
         return Accepted(await receipts.ResendAsync(tripId, User.FindFirstValue("sub")!, ct));
     }
 }
+
+// Only the saved card is chosen; amount, currency and identity come from the server.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PayRequest(string? CardId);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record CashRequest;
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DemoCompletionRequest(string? TripId, decimal? FinalFare);
 
 // Resend takes no fields: the receipt always goes to the address captured at checkout.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

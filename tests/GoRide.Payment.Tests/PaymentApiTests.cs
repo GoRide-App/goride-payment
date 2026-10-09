@@ -260,7 +260,9 @@ internal sealed class PaymentApplication(string connectionString,
             // Tests drive receipt delivery explicitly; no background sender, and never real email
             // even if local Development settings configure Brevo.
             ["Receipts:DispatcherEnabled"] = "false",
-            ["Email:Provider"] = "Log"
+            ["Email:Provider"] = "Log",
+            // Demo card charges skip the simulated network delay.
+            ["DemoCard:ProcessingMilliseconds"] = "0"
         };
         if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
@@ -301,6 +303,7 @@ internal sealed class IdentityStub : HttpMessageHandler
             "session=rider-1" => new { userId = "rider-1" },
             "session=rider-1-email" => new { userId = "rider-1", name = "Rider One", email = TestRider.Email },
             "session=other" => new { userId = "other" },
+            "session=driver-1" => new { userId = "driver-1" },
             _ => null
         };
         return Task.FromResult(session is null ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
@@ -349,7 +352,7 @@ internal sealed class TestDatabase : IAsyncDisposable
     public async Task<long> Count(string table)
     {
         if (table is not ("payments" or "processed_payment_events" or "payment_checkouts" or "payment_verifications"
-            or "payment_confirmations" or "payment_contacts" or "payment_receipts"))
+            or "payment_confirmations" or "payment_contacts" or "payment_receipts" or "payment_cards"))
             throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();

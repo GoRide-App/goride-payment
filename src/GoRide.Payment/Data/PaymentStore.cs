@@ -40,6 +40,20 @@ public sealed class PaymentStore(IConfiguration configuration)
         return selected;
     }
 
+    // Applies a rule to the payment under its row lock and saves the result.
+    public async Task<PaymentRecord> UpdateAsync(string tripId, Func<PaymentRecord, PaymentRecord> change, CancellationToken ct)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        var payment = await ReadAsync(connection, transaction, tripId, ct)
+            ?? throw new PaymentException(409, "TRIP_NOT_COMPLETED", "The completed trip and final fare are not available yet.");
+        var updated = change(payment);
+        if (updated != payment) await WriteAsync(connection, transaction, updated, ct);
+        await transaction.CommitAsync(ct);
+        return updated;
+    }
+
     public async Task<PaymentRecord?> FindProcessedEventAsync(TripCompletedEvent evt, CancellationToken ct)
     {
         var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(evt, Json)));
