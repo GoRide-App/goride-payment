@@ -24,6 +24,12 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/{tripId}/confirmation/acknowledge` | Accepts exactly `{ "confirmationId": "..." }`; records that the app showed it |
 | GET | `/payments/{tripId}/receipt` | Whether the email receipt was sent (address masked) and whether it can be resent |
 | POST | `/payments/{tripId}/receipt/resend` | Accepts `{}` or no body; queues the receipt again (202) |
+| GET/POST | `/payments/cards` | List or save the rider's demo cards (test numbers only; only brand, last four and expiry are kept) |
+| DELETE, POST | `/payments/cards/{cardId}`, `/payments/cards/{cardId}/default` | Remove a card, or make it the default |
+| GET | `/payments/cards/test-cards` | The demo test card numbers and what each does |
+| POST | `/payments/{tripId}/pay` | Accepts exactly `{ "cardId": "..." }`; charges the saved demo card in-app |
+| GET | `/payments/{tripId}/status` | Payment status for the trip's rider and driver, or JSON `null` before completion arrives |
+| POST | `/payments/{tripId}/cash`, `/payments/{tripId}/cash/confirm` | Rider chooses cash; the driver confirms receiving it |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
 
 The get/select paths match the frontend's existing `payments.get` and `payments.selectMethod` contract. The checkout endpoint returns JSON (`orderId`, `actionUrl`, `fields`, `amount`, `currency`); the client builds a hidden form from `fields` and POSTs it to `actionUrl`. Route these paths through the same frontend origin so its identity session cookie reaches the service. The payment service verifies the cookie against identity-auth's `/api/me`; it never accepts a browser-supplied rider ID. Its HTTP client does not store cookies or follow redirects. Configure `Identity__BaseUrl` to the actual identity service. Direct cross-origin clients additionally require an allowed CORS origin and credentials.
@@ -175,6 +181,27 @@ By default `Email__Provider=Log`: receipts are rendered and logged locally inste
 Receipts are sent through Brevo's transactional API (`POST https://api.brevo.com/v3/smtp/email`) with an HTML body and a plain-text alternative. Brevo 4xx responses other than 429 are treated as permanent failures; 429, 5xx, timeouts and network errors are retried. `Receipts__DispatcherEnabled` (default `true`) and `Receipts__PollSeconds` (default 5) control the background sender.
 
 The development page has an optional **Receipt email** field on the test ride. After **Simulate successful payment** it shows the receipt status, a **Preview email** link with the exact email, and **Resend**.
+
+## In-app demo cards
+
+For local demos the rider app can pay in-app, like a Stripe card-on-file payment, without leaving for PayHere's page. Only published test numbers are accepted, so a real card can never be entered:
+
+| Card | Result |
+| --- | --- |
+| `4242 4242 4242 4242`, `5555 5555 5555 4444`, `4916 2175 0161 1292` | Payment succeeds |
+| `4000 0000 0000 0002` | `CARD_DECLINED` |
+| `4000 0000 0000 9995` | `INSUFFICIENT_FUNDS` |
+| `4000 0000 0000 0069` | `EXPIRED_CARD` |
+| `4000 0000 0000 0127` | `INCORRECT_CVC` |
+| `4000 0000 0000 0119` | `PROCESSING_ERROR` |
+
+Any future expiry and any three-digit CVC work. Saving validates the number (length and Luhn), expiry, CVC and name and returns `CARD_NUMBER_INVALID`, `CARD_EXPIRY_INVALID`, `CARD_EXPIRED`, `CARD_CVC_INVALID`, `CARD_NAME_INVALID` or `CARD_NOT_TEST_CARD` (400); `CARD_ALREADY_SAVED` and `CARD_LIMIT_REACHED` (5 cards) are 409. `payment_cards` keeps only the brand, last four digits, expiry, holder name, the test outcome and a fingerprint; the full number and CVC are discarded after validation.
+
+`POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice: a success marks the trip `Paid` together with its confirmation and email receipt in one transaction, under the trip lock, so a double tap charges once (later calls return `alreadyPaid: true`). Declines return 402 with the codes above and leave the trip unpaid, so the rider can try another card. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
+
+Cash: `POST /payments/{tripId}/cash` (rider) sets `AwaitingCash`; the trip is `Paid` only when the trip's driver calls `POST /payments/{tripId}/cash/confirm`. `GET /payments/{tripId}/status` is shared by the rider and the driver, so the driver app can keep the trip open until it is paid. `select-method` still accepts only Card.
+
+Simulated rides (the app's demo drivers) never reach the trip service, so in Development with `DemoTrips__Enabled=true` the rider app may report one with `POST /payments/demo-completions` `{ "tripId": "trp_...", "finalFare": 640.00 }`. It only accepts simulated `trp_` IDs, is idempotent, and is 404 everywhere else. Real trips are completed only by the trip service through `/internal/trip-events`.
 
 ## Kafka
 
