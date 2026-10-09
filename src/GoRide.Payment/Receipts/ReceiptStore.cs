@@ -57,4 +57,94 @@ public sealed class ReceiptStore(PaymentStore payments)
         insert.Parameters.AddWithValue("@now", notice.ReceivedAt.UtcDateTime);
         await insert.ExecuteNonQueryAsync(ct);
     }
+
+    // Claims one due receipt with a lease, so concurrent senders never take the same row.
+    // A sender that crashed mid-send leaves an expired lease, which makes the row due again.
+    public async Task<(ReceiptContent Content, int Attempts, string Token)?> ClaimNextAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        var token = Guid.NewGuid().ToString();
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        await using (var claim = new MySqlCommand("""
+            UPDATE payment_receipts
+            SET status = 'Sending', lease_token = @token, lease_until = @lease, attempts = attempts + 1
+            WHERE (status IN ('Pending', 'Retry') AND next_attempt_at <= @now) OR (status = 'Sending' AND lease_until < @now)
+            ORDER BY next_attempt_at
+            LIMIT 1
+            """, connection))
+        {
+            claim.Parameters.AddWithValue("@token", token);
+            claim.Parameters.AddWithValue("@lease", (now + ReceiptRules.Lease).UtcDateTime);
+            claim.Parameters.AddWithValue("@now", now.UtcDateTime);
+            if (await claim.ExecuteNonQueryAsync(ct) == 0) return null;
+        }
+
+        string tripId, receiptId, recipient, currency, reference;
+        string? name, brand, card;
+        long amount;
+        int attempts;
+        DateTime paidAt;
+        await using (var read = new MySqlCommand("""
+            SELECT r.trip_id, r.receipt_id, r.recipient, r.recipient_name, r.attempts,
+                   c.amount_minor, c.currency, c.payment_method, c.card_masked, c.provider_payment_id, c.paid_at
+            FROM payment_receipts r JOIN payment_confirmations c ON c.trip_id = r.trip_id
+            WHERE r.lease_token = @token
+            """, connection))
+        {
+            read.Parameters.AddWithValue("@token", token);
+            await using var reader = await read.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            tripId = reader.GetString(0);
+            receiptId = Convert.ToString(reader.GetValue(1), System.Globalization.CultureInfo.InvariantCulture)!;
+            recipient = reader.GetString(2);
+            name = reader.IsDBNull(3) ? null : reader.GetString(3);
+            attempts = reader.GetInt32(4);
+            amount = reader.GetInt64(5);
+            currency = reader.GetString(6);
+            brand = reader.IsDBNull(7) ? null : reader.GetString(7);
+            card = reader.IsDBNull(8) ? null : reader.GetString(8);
+            reference = reader.GetString(9);
+            paidAt = reader.GetDateTime(10);
+        }
+        var payment = await PaymentStore.ReadAsync(connection, null, tripId, ct);
+        var last4 = card is { Length: >= 4 } && card[^4..].All(char.IsAsciiDigit) ? card[^4..] : null;
+        return (new ReceiptContent(receiptId, tripId, recipient, name, amount, currency, brand, last4, reference,
+            new DateTimeOffset(DateTime.SpecifyKind(paidAt, DateTimeKind.Utc)), payment?.Breakdown), attempts, token);
+    }
+
+    public async Task MarkSentAsync(string tripId, string token, string provider, string messageId, DateTimeOffset at, CancellationToken ct)
+    {
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var command = new MySqlCommand("""
+            UPDATE payment_receipts
+            SET status = 'Sent', sent_at = @at, provider = @provider, provider_message_id = @message,
+                last_error = NULL, lease_token = NULL, lease_until = NULL
+            WHERE trip_id = @trip AND lease_token = @token
+            """, connection);
+        command.Parameters.AddWithValue("@at", at.UtcDateTime);
+        command.Parameters.AddWithValue("@provider", provider);
+        command.Parameters.AddWithValue("@message", messageId.Length <= 128 ? messageId : messageId[..128]);
+        command.Parameters.AddWithValue("@trip", tripId);
+        command.Parameters.AddWithValue("@token", token);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task MarkFailedAsync(string tripId, string token, string status, DateTimeOffset nextAttempt,
+        string error, CancellationToken ct)
+    {
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var command = new MySqlCommand("""
+            UPDATE payment_receipts
+            SET status = @status, next_attempt_at = @next, last_error = @error, lease_token = NULL, lease_until = NULL
+            WHERE trip_id = @trip AND lease_token = @token
+            """, connection);
+        command.Parameters.AddWithValue("@status", status);
+        command.Parameters.AddWithValue("@next", nextAttempt.UtcDateTime);
+        command.Parameters.AddWithValue("@error", ReceiptRules.ErrorSummary(error));
+        command.Parameters.AddWithValue("@trip", tripId);
+        command.Parameters.AddWithValue("@token", token);
+        await command.ExecuteNonQueryAsync(ct);
+    }
 }

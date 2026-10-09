@@ -31,6 +31,16 @@ builder.Services.AddScoped<PaymentVerificationService>();
 builder.Services.AddScoped<ConfirmationStore>();
 builder.Services.AddScoped<ConfirmationService>();
 builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptStore>();
+// SCRUM-105: receipts are sent by Brevo when Email:Provider=Brevo, otherwise logged locally.
+builder.Services.AddSingleton<GoRide.Payment.Receipts.EmailSettings>();
+builder.Services.AddHttpClient("Brevo", client => client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+builder.Services.AddScoped<GoRide.Payment.Receipts.IEmailSender>(sp =>
+    sp.GetRequiredService<GoRide.Payment.Receipts.EmailSettings>().UseBrevo
+        ? ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.BrevoEmailSender>(sp)
+        : ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.LogEmailSender>(sp));
+builder.Services.AddSingleton<GoRide.Payment.Receipts.ReceiptDispatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GoRide.Payment.Receipts.ReceiptDispatcher>());
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)

@@ -256,7 +256,9 @@ internal sealed class PaymentApplication(string connectionString,
             ["PayHere:MerchantSecret"] = TestPayHere.Secret,
             ["PayHere:ReturnUrl"] = "https://goride.test/return",
             ["PayHere:CancelUrl"] = "https://goride.test/cancel",
-            ["PayHere:NotifyUrl"] = "https://goride.test/payments/payhere/notify"
+            ["PayHere:NotifyUrl"] = "https://goride.test/payments/payhere/notify",
+            // Tests drive receipt delivery explicitly; no background sender.
+            ["Receipts:DispatcherEnabled"] = "false"
         };
         if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
