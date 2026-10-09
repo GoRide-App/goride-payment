@@ -74,20 +74,27 @@ public sealed class ReceiptStore(PaymentStore payments)
             Utc(reader, 5), Utc(reader, 6), reader.IsDBNull(7) ? null : reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetString(8));
     }
 
-    // Queues another delivery of a finished receipt. The status condition makes the update
-    // a no-op while a delivery is already queued or in flight.
+    // Queues another delivery of a finished receipt. The conditions repeat the service checks so
+    // two concurrent requests cannot both pass: the update is a no-op while a delivery is queued
+    // or in flight, after the resend limit, or inside the cooldown.
     public async Task<bool> RequestResendAsync(string tripId, DateTimeOffset now, CancellationToken ct)
     {
+        var cutoff = (now - ReceiptRules.ResendCooldown).UtcDateTime;
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
         await using var command = new MySqlCommand("""
             UPDATE payment_receipts
             SET status = 'Pending', attempts = 0, next_attempt_at = @now, last_error = NULL,
                 resend_count = resend_count + 1, last_requested_at = @now
-            WHERE trip_id = @trip AND status IN ('Sent', 'Failed')
+            WHERE trip_id = @trip AND status IN ('Sent', 'Failed') AND recipient IS NOT NULL
+              AND resend_count < @max
+              AND (last_requested_at IS NULL OR last_requested_at <= @cutoff)
+              AND (sent_at IS NULL OR sent_at <= @cutoff)
             """, connection);
         command.Parameters.AddWithValue("@now", now.UtcDateTime);
         command.Parameters.AddWithValue("@trip", tripId);
+        command.Parameters.AddWithValue("@max", ReceiptRules.MaxResends);
+        command.Parameters.AddWithValue("@cutoff", cutoff);
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 

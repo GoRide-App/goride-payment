@@ -68,12 +68,20 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
         _ => (500, "INTERNAL_ERROR", "The request could not be completed.")
     };
     context.Response.StatusCode = status;
-    await context.Response.WriteAsJsonAsync(new ProblemDetails
+    var problem = new ProblemDetails
     {
         Status = status,
         Title = message,
         Extensions = { ["code"] = code, ["traceId"] = context.TraceIdentifier }
-    });
+    };
+    if (error is PaymentException { RetryAfter: { } wait })
+    {
+        // Also in the body: browsers hide Retry-After from cross-origin scripts.
+        var seconds = Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds));
+        context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        problem.Extensions["retryAfterSeconds"] = seconds;
+    }
+    await context.Response.WriteAsJsonAsync(problem);
 }));
 app.UseCors();
 app.UseAuthentication();

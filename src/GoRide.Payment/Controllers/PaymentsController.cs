@@ -7,6 +7,7 @@ using GoRide.Payment.Receipts;
 using GoRide.Payment.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace GoRide.Payment.Controllers;
 
@@ -68,12 +69,17 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
     }
 
     [HttpPost("{tripId}/receipt/resend")]
-    public async Task<IActionResult> ResendReceipt(string tripId, CancellationToken ct)
+    public async Task<IActionResult> ResendReceipt(string tripId,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ResendReceiptRequest? request, CancellationToken ct)
     {
         Response.Headers.CacheControl = "no-store";
         return Accepted(await receipts.ResendAsync(tripId, User.FindFirstValue("sub")!, ct));
     }
 }
+
+// Resend takes no fields: the receipt always goes to the address captured at checkout.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ResendReceiptRequest;
 
 // Only the confirmation ID is accepted; the caller cannot set amounts, times or identity.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
