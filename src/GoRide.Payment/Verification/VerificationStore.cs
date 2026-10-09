@@ -93,7 +93,11 @@ public sealed class VerificationStore(PaymentStore payments)
         // SCRUM-104: the confirmation commits with the paid state. Paid is only decided while
         // the trip is unpaid under this row lock, so exactly one confirmation can exist.
         if (decision.Outcome == VerificationOutcome.Paid)
+        {
             await InsertConfirmationAsync(connection, transaction, decision.Payment, notice, ct);
+            // SCRUM-105: the email receipt joins the same transaction, so it exists exactly once.
+            await Receipts.ReceiptStore.CreateForPaidTripAsync(connection, transaction, decision.Payment, notice, ct);
+        }
         await transaction.CommitAsync(ct);
         return new(decision.Outcome, decision.Payment, false);
     }

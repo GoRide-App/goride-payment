@@ -325,7 +325,7 @@ internal sealed class TestDatabase : IAsyncDisposable
     public async Task<long> Count(string table)
     {
         if (table is not ("payments" or "processed_payment_events" or "payment_checkouts" or "payment_verifications"
-            or "payment_confirmations"))
+            or "payment_confirmations" or "payment_contacts" or "payment_receipts"))
             throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();

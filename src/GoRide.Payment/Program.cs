@@ -30,6 +30,7 @@ builder.Services.AddScoped<VerificationStore>();
 builder.Services.AddScoped<PaymentVerificationService>();
 builder.Services.AddScoped<ConfirmationStore>();
 builder.Services.AddScoped<ConfirmationService>();
+builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptStore>();
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)

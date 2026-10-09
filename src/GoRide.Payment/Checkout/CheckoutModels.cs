@@ -15,20 +15,26 @@ public sealed record CheckoutForm(string OrderId, string ActionUrl, IReadOnlyDic
 
 // PayHere requires customer contact fields. Only identity-verified claims are used;
 // sandbox placeholders fill anything the identity service does not provide.
-public sealed record RiderContact(string FirstName, string LastName, string Email, string Phone)
+// EmailVerified is true only when Email came from the identity session; only then is it
+// stored for the SCRUM-105 email receipt (placeholders are never emailed).
+public sealed record RiderContact(string FirstName, string LastName, string Email, string Phone, bool EmailVerified = false)
 {
     public static RiderContact From(ClaimsPrincipal user)
     {
         var name = (user.FindFirstValue("name") ?? "").Trim();
         var parts = name.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var email = user.FindFirstValue("email");
         return new(
             Clean(parts.ElementAtOrDefault(0), "GoRide"),
             Clean(parts.ElementAtOrDefault(1), "Rider"),
-            Clean(user.FindFirstValue("email"), "rider@goride.lk"),
-            Clean(user.FindFirstValue("phone_number"), "0770000000"));
+            Clean(email, "rider@goride.lk"),
+            Clean(user.FindFirstValue("phone_number"), "0770000000"),
+            Receipts.ReceiptRules.IsDeliverableEmail(email));
     }
 
     public static RiderContact Sandbox { get; } = new("GoRide", "Rider", "rider@goride.lk", "0770000000");
+
+    public string DisplayName => $"{FirstName} {LastName}".Trim();
 
     private static string Clean(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) || value.Length > 100 || value.Any(char.IsControl) ? fallback : value.Trim();
