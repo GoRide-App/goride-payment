@@ -1,4 +1,6 @@
+using GoRide.Payment.Checkout;
 using GoRide.Payment.Models;
+using GoRide.Payment.Verification;
 
 namespace GoRide.Payment.Services;
 
@@ -74,6 +76,37 @@ public static class PaymentRules
             Breakdown = evt.Payload.Breakdown ?? (fare == current.FinalFare ? current.Breakdown : null),
             FareUpdatedAt = evt.OccurredAt
         };
+    }
+
+    // Decides what a signature-verified provider notice does. Only a success notice whose
+    // amount and currency match both its order and the current final fare marks the trip
+    // paid; anything else is recorded for reconciliation and leaves the payment unchanged.
+    public static VerificationDecision ApplyProviderNotice(PaymentRecord payment, CheckoutAttempt attempt, VerificationRecord notice)
+    {
+        switch (notice.StatusCode)
+        {
+            case 2:
+                var finalMinor = decimal.ToInt64(payment.FinalFare * 100);
+                if (notice.TripId != payment.TripId || notice.Currency != attempt.Currency
+                    || notice.AmountMinor != attempt.AmountMinor || notice.AmountMinor != finalMinor)
+                    return new(payment, VerificationOutcome.AmountMismatch);
+                if (payment.Status is "Paid" or "Charged")
+                    return new(payment, payment.ProviderPaymentId == notice.PaymentId
+                        ? VerificationOutcome.AlreadyPaid : VerificationOutcome.DuplicatePayment);
+                return new(payment with
+                {
+                    Status = "Paid",
+                    Method = "Card",
+                    ProcessedAt = notice.ReceivedAt,
+                    ProviderPaymentId = notice.PaymentId,
+                    ProviderOrderId = notice.OrderId
+                }, VerificationOutcome.Paid);
+            case 0: return new(payment, VerificationOutcome.Pending);
+            case -1: return new(payment, VerificationOutcome.Cancelled);
+            case -2: return new(payment, VerificationOutcome.Failed);
+            case -3: return new(payment, VerificationOutcome.Chargedback);
+            default: throw new PaymentException(400, "INVALID_NOTIFICATION", "status_code is not a PayHere status.");
+        }
     }
 
     public static PaymentRecord SelectCard(PaymentRecord payment, string riderId)

@@ -239,7 +239,7 @@ public sealed class PaymentApiTests
     }
 }
 
-internal sealed class PaymentApplication(string connectionString, HttpMessageHandler? stripe = null,
+internal sealed class PaymentApplication(string connectionString,
     string environment = "Testing", Dictionary<string, string?>? settings = null,
     TimeProvider? clock = null, IPAddress? remoteIp = null) : WebApplicationFactory<Program>
 {
@@ -252,20 +252,28 @@ internal sealed class PaymentApplication(string connectionString, HttpMessageHan
             ["InternalServices:ApiKey"] = "test-service-key",
             ["Kafka:Enabled"] = "false",
             ["Identity:BaseUrl"] = "http://identity.test/",
-            ["Stripe:SecretKey"] = "sk_test_automated_placeholder",
-            ["Stripe:SuccessUrl"] = "https://goride.test/return",
-            ["Stripe:CancelUrl"] = "https://goride.test/cancel"
+            ["PayHere:MerchantId"] = TestPayHere.MerchantId,
+            ["PayHere:MerchantSecret"] = TestPayHere.Secret,
+            ["PayHere:ReturnUrl"] = "https://goride.test/return",
+            ["PayHere:CancelUrl"] = "https://goride.test/cancel",
+            ["PayHere:NotifyUrl"] = "https://goride.test/payments/payhere/notify"
         };
         if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
         builder.ConfigureServices(services =>
         {
             services.AddHttpClient("Identity").ConfigurePrimaryHttpMessageHandler(() => new IdentityStub());
-            if (stripe is not null) services.AddHttpClient("Stripe").ConfigurePrimaryHttpMessageHandler(() => stripe);
             if (clock is not null) services.AddSingleton(clock);
             services.AddSingleton<IStartupFilter>(new RemoteAddressFilter(remoteIp ?? IPAddress.Loopback));
         });
     }
+}
+
+// Placeholder sandbox credentials; real ones live only in local, ignored settings.
+internal static class TestPayHere
+{
+    public const string MerchantId = "1211149";
+    public const string Secret = "automated-test-merchant-secret";
 }
 
 internal sealed class RemoteAddressFilter(IPAddress address) : IStartupFilter
@@ -316,7 +324,8 @@ internal sealed class TestDatabase : IAsyncDisposable
 
     public async Task<long> Count(string table)
     {
-        if (table is not ("payments" or "processed_payment_events" or "payment_checkouts")) throw new ArgumentException("Unknown table.");
+        if (table is not ("payments" or "processed_payment_events" or "payment_checkouts" or "payment_verifications"))
+            throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();
         await using var command = new MySqlCommand($"SELECT COUNT(*) FROM {table}", connection);

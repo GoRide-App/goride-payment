@@ -8,11 +8,11 @@
   <script defer src="/dev/payments/app.js"></script>
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="/dev/payments" aria-label="GoRide test checkout"><span class="brand-mark">G</span> GoRide<span class="brand-divider"></span><span class="workspace">Developer tools</span></a><span class="test-badge"><span></span> Stripe test mode</span></header>
+  <header class="topbar"><a class="brand" href="/dev/payments" aria-label="GoRide test checkout"><span class="brand-mark">G</span> GoRide<span class="brand-divider"></span><span class="workspace">Developer tools</span></a><span class="test-badge"><span></span> PayHere sandbox</span></header>
   <main>
-    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-102</div>
-    <h1>A completed ride.<br>A secure checkout.</h1>
-    <p class="intro">Create a test ride and open Stripe’s hosted card checkout. No real money moves.</p>
+    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-103</div>
+    <h1>A completed ride.<br>A verified payment.</h1>
+    <p class="intro">Create a test ride, open the PayHere sandbox checkout, then confirm the payment the way PayHere’s server would. No real money moves.</p>
     <div id="return-notice" class="notice" role="status" hidden></div>
     <div class="grid">
       <section class="card setup" aria-labelledby="setup-title">
@@ -22,30 +22,35 @@
         <form id="trip-form">
           <label for="fare">Final fare</label>
           <div class="amount-input"><span>LKR</span><input id="fare" name="fare" type="number" min="0.01" max="999999.99" step="0.01" value="725.50" required inputmode="decimal" aria-describedby="fare-help"></div>
-          <p class="field-help" id="fare-help">The saved final fare is sent to Stripe in LKR.</p>
+          <p class="field-help" id="fare-help">The saved final fare is signed into the PayHere order in LKR.</p>
           <button id="create" class="button secondary" type="submit">Create test ride <span aria-hidden="true">↗</span></button>
         </form>
         <div class="divider"></div>
-        <div class="section-top"><span class="step">02</span><span class="section-label">CONTINUE TO STRIPE</span></div>
+        <div class="section-top"><span class="step">02</span><span class="section-label">CONTINUE TO PAYHERE</span></div>
         <h2>Try the payment flow</h2>
-        <p class="muted">Card details are entered on Stripe’s secure page.</p>
-        <button id="checkout" class="button primary" type="button" disabled>Open Stripe checkout <span aria-hidden="true">→</span></button>
+        <p class="muted">Card details are entered on PayHere’s sandbox page.</p>
+        <button id="checkout" class="button primary" type="button" disabled>Open PayHere checkout <span aria-hidden="true">→</span></button>
+        <div class="divider"></div>
+        <div class="section-top"><span class="step">03</span><span class="section-label">CONFIRM THE PAYMENT</span></div>
+        <h2>Verify like PayHere does</h2>
+        <p class="muted">PayHere cannot reach localhost, so this sends the signed notice its server would send. It goes through the same verification as the real notify URL.</p>
+        <button id="simulate" class="button secondary" type="button" disabled>Simulate successful payment <span aria-hidden="true">✓</span></button>
         <p id="feedback" class="feedback" role="status" aria-live="polite">Create a test ride to get started.</p>
       </section>
       <aside>
         <section class="card receipt" aria-labelledby="receipt-title">
           <div class="receipt-heading"><span class="tiny-mark">G</span><span class="pill" id="trip-state">NO RIDE YET</span></div>
           <h2 id="receipt-title">Your test ride</h2>
-          <p class="muted">Final amount to send to checkout</p>
+          <p class="muted">Final amount to pay by card</p>
           <div class="fare-display"><span>LKR</span> <strong id="total">—</strong></div>
-          <dl><div><dt>Payment method</dt><dd id="method">—</dd></div><div><dt>Payment status</dt><dd id="status">—</dd></div><div><dt>Environment</dt><dd>Stripe sandbox</dd></div></dl>
+          <dl><div><dt>Payment method</dt><dd id="method">—</dd></div><div><dt>Payment status</dt><dd id="status">—</dd></div><div><dt>Environment</dt><dd>PayHere sandbox</dd></div></dl>
           <div class="trip-reference"><span>TRIP REFERENCE</span><code id="trip-id">Create a test ride</code></div>
         </section>
-        <section class="test-card" aria-labelledby="test-card-title"><div class="test-card-title"><h3 id="test-card-title">A card for your test drive</h3><span>VISA</span></div><p class="card-number">4242 4242 4242 4242</p><p>Use a future expiry date and any three-digit CVC.</p><a href="https://docs.stripe.com/testing" target="_blank" rel="noreferrer">More Stripe test cards ↗</a></section>
+        <section class="test-card" aria-labelledby="test-card-title"><div class="test-card-title"><h3 id="test-card-title">A card for your test drive</h3><span>VISA</span></div><p class="card-number">4916 2175 0161 1292</p><p>Use any future expiry date and any three-digit CVC on the sandbox page.</p><a href="https://support.payhere.lk/sandbox-and-testing" target="_blank" rel="noreferrer">More PayHere sandbox cards ↗</a></section>
       </aside>
     </div>
-    <div id="configuration" class="configuration" role="status">Checking Stripe configuration…</div>
-    <footer><span class="footer-dot"></span> Local development only <span class="footer-separator">·</span> Returning from Stripe does not mark a ride as paid. Provider verification follows in SCRUM-103.</footer>
+    <div id="configuration" class="configuration" role="status">Checking PayHere configuration…</div>
+    <footer><span class="footer-dot"></span> Local development only <span class="footer-separator">·</span> A ride is marked paid only after PayHere’s notice is verified (SCRUM-103).</footer>
   </main>
 </body>
 </html>

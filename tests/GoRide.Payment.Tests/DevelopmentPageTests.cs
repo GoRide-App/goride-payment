@@ -36,7 +36,7 @@ public sealed class DevelopmentPageTests
             var response = await client.GetAsync("/dev/payments" + path);
             response.EnsureSuccessStatusCode();
             Assert.True(response.Headers.CacheControl?.NoStore);
-            Assert.DoesNotContain("sk_test_automated_placeholder", await response.Content.ReadAsStringAsync());
+            Assert.DoesNotContain(TestPayHere.Secret, await response.Content.ReadAsStringAsync());
         }
         using var remoteHost = new HttpRequestMessage(HttpMethod.Get, "/dev/payments");
         remoteHost.Headers.Host = "external.example";
@@ -58,11 +58,10 @@ public sealed class DevelopmentPageTests
     }
 
     [MySqlFact]
-    public async Task DevelopmentPageCreatesTestRideAndOpensStripeWithoutIdentityService()
+    public async Task DevelopmentPageCreatesTestRideAndOpensPayHereWithoutIdentityService()
     {
         await using var db = await TestDatabase.CreateAsync();
-        using var stripe = new StripeStub();
-        await using var app = new PaymentApplication(db.ConnectionString, stripe, "Development", Enabled);
+        await using var app = new PaymentApplication(db.ConnectionString, "Development", Enabled);
         using var client = app.CreateClient();
         // Even if another app's identity cookie is present, a local dev fixture never needs identity-auth.
         client.DefaultRequestHeaders.Add("Cookie", "session=unavailable");
@@ -74,7 +73,9 @@ public sealed class DevelopmentPageTests
         Assert.Equal("Card", trip.Method);
         var checkout = await client.PostAsJsonAsync($"/dev/payments/trips/{trip.TripId}/checkout", new { });
         checkout.EnsureSuccessStatusCode();
-        Assert.Equal(725.50m, (await checkout.Content.ReadFromJsonAsync<CheckoutRedirect>())!.Amount);
+        var form = (await checkout.Content.ReadFromJsonAsync<CheckoutForm>())!;
+        Assert.Equal(725.50m, form.Amount);
+        Assert.Equal(PayHereSettings.CheckoutUrl, form.ActionUrl);
         Assert.Equal("Pending", (await client.GetFromJsonAsync<PaymentRecord>($"/dev/payments/trips/{trip.TripId}"))!.Status);
         var publicResponse = await client.PostAsJsonAsync($"/payments/{trip.TripId}/checkout", new { });
         await CheckoutApiTests.Error(publicResponse, 503, "IDENTITY_UNAVAILABLE");
@@ -84,14 +85,13 @@ public sealed class DevelopmentPageTests
     public async Task DevelopmentFixtureCannotCheckoutAnotherRidersTrip()
     {
         await using var db = await TestDatabase.CreateAsync();
-        using var stripe = new StripeStub();
-        await using var app = new PaymentApplication(db.ConnectionString, stripe, "Development", Enabled);
+        await using var app = new PaymentApplication(db.ConnectionString, "Development", Enabled);
         using var client = CheckoutApiTests.RiderClient(app);
         var evt = PaymentRulesTests.Completion();
         await CheckoutApiTests.Seed(client, evt);
         client.DefaultRequestHeaders.Add("X-GoRide-Dev", "1");
         await CheckoutApiTests.Error(await client.PostAsJsonAsync($"/dev/payments/trips/{evt.TripId}/checkout", new { }), 403, "PAYMENT_FORBIDDEN");
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/dev/payments/trips/{evt.TripId}")).StatusCode);
-        Assert.Equal(0, stripe.Count);
+        Assert.Equal(0L, await db.Count("payment_checkouts"));
     }
 }

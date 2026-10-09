@@ -16,6 +16,9 @@ public sealed record PaymentRecord
     public DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? ProcessedAt { get; init; }
     public DateTimeOffset FareUpdatedAt { get; init; }
+    // Set only from a verified provider notice; never from a client request.
+    public string? ProviderPaymentId { get; init; }
+    public string? ProviderOrderId { get; init; }
 }
 
 public sealed record FareBreakdown(decimal Base, decimal Distance, decimal Time,

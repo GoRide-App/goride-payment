@@ -34,7 +34,12 @@ public sealed class IdentitySessionHandler(IOptionsMonitor<AuthenticationSchemeO
             if (string.IsNullOrWhiteSpace(session?.UserId)) return AuthenticateResult.Fail("The session has no user ID.");
             if (response.Headers.TryGetValues("Set-Cookie", out var renewedCookies))
                 foreach (var renewed in renewedCookies) Response.Headers.Append("Set-Cookie", renewed);
-            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", session.UserId)], SchemeName));
+            var claims = new List<Claim> { new("sub", session.UserId) };
+            // Contact details prefill the provider checkout; they never grant access.
+            if (!string.IsNullOrWhiteSpace(session.Name)) claims.Add(new("name", session.Name));
+            if (!string.IsNullOrWhiteSpace(session.Email)) claims.Add(new("email", session.Email));
+            if (!string.IsNullOrWhiteSpace(session.Phone)) claims.Add(new("phone_number", session.Phone));
+            var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
             return AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException
@@ -56,5 +61,5 @@ public sealed class IdentitySessionHandler(IOptionsMonitor<AuthenticationSchemeO
         return Response.WriteAsJsonAsync(new { status, code, title }, Context.RequestAborted);
     }
 
-    private sealed record IdentitySession(string? UserId);
+    private sealed record IdentitySession(string? UserId, string? Name = null, string? Email = null, string? Phone = null);
 }

@@ -1,20 +1,35 @@
+using System.Security.Claims;
+
 namespace GoRide.Payment.Checkout;
 
+// OrderId is the PayHere order_id. It is stored in payment_checkouts.idempotency_key,
+// so one order maps to exactly one trip and one fixed amount.
 public sealed record CheckoutAttempt(
-    string TripId, string IdempotencyKey, long AmountMinor, string Currency,
-    string SuccessUrl, string CancelUrl, DateTimeOffset CreatedAt,
-    string? SessionId = null);
+    string TripId, string OrderId, long AmountMinor, string Currency,
+    string ReturnUrl, string CancelUrl, DateTimeOffset CreatedAt);
 
-public sealed record HostedSession(string Id, string Status, string PaymentStatus,
-    string? Url, long AmountTotal, string Currency, bool LiveMode,
-    string ClientReferenceId, long ExpiresAt);
+// The browser posts these fields to PayHere. The hash is safe to expose; the merchant
+// secret that produced it never leaves the server.
+public sealed record CheckoutForm(string OrderId, string ActionUrl, IReadOnlyDictionary<string, string> Fields,
+    decimal Amount, string Currency);
 
-public sealed record CheckoutRedirect(string SessionId, string Url, decimal Amount,
-    string Currency, DateTimeOffset ExpiresAt);
-
-public interface ICheckoutProvider
+// PayHere requires customer contact fields. Only identity-verified claims are used;
+// sandbox placeholders fill anything the identity service does not provide.
+public sealed record RiderContact(string FirstName, string LastName, string Email, string Phone)
 {
-    Task<HostedSession> CreateAsync(CheckoutAttempt attempt, CancellationToken ct);
-    Task<HostedSession> GetAsync(CheckoutAttempt attempt, CancellationToken ct);
-    Task<HostedSession> ExpireAsync(CheckoutAttempt attempt, CancellationToken ct);
+    public static RiderContact From(ClaimsPrincipal user)
+    {
+        var name = (user.FindFirstValue("name") ?? "").Trim();
+        var parts = name.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return new(
+            Clean(parts.ElementAtOrDefault(0), "GoRide"),
+            Clean(parts.ElementAtOrDefault(1), "Rider"),
+            Clean(user.FindFirstValue("email"), "rider@goride.lk"),
+            Clean(user.FindFirstValue("phone_number"), "0770000000"));
+    }
+
+    public static RiderContact Sandbox { get; } = new("GoRide", "Rider", "rider@goride.lk", "0770000000");
+
+    private static string Clean(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) || value.Length > 100 || value.Any(char.IsControl) ? fallback : value.Trim();
 }
