@@ -31,6 +31,7 @@ builder.Services.AddScoped<PaymentVerificationService>();
 builder.Services.AddScoped<ConfirmationStore>();
 builder.Services.AddScoped<ConfirmationService>();
 builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptStore>();
+builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptService>();
 // SCRUM-105: receipts are sent by Brevo when Email:Provider=Brevo, otherwise logged locally.
 builder.Services.AddSingleton<GoRide.Payment.Receipts.EmailSettings>();
 builder.Services.AddHttpClient("Brevo", client => client.Timeout = TimeSpan.FromSeconds(15))
@@ -87,7 +88,8 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
         SELECT 1 FROM payments
         LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id
         LEFT JOIN payment_verifications ON payments.trip_id = payment_verifications.trip_id
-        LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id LIMIT 1
+        LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id
+        LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id LIMIT 1
         """, connection);
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });

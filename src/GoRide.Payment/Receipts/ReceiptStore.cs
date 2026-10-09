@@ -58,6 +58,42 @@ public sealed class ReceiptStore(PaymentStore payments)
         await insert.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task<ReceiptRow?> GetAsync(string tripId, CancellationToken ct)
+    {
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var command = new MySqlCommand("""
+            SELECT receipt_id, recipient, status, attempts, resend_count, sent_at, last_requested_at, provider, last_error
+            FROM payment_receipts WHERE trip_id = @trip
+            """, connection);
+        command.Parameters.AddWithValue("@trip", tripId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+        return new(tripId, Convert.ToString(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture)!,
+            reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetInt32(4),
+            Utc(reader, 5), Utc(reader, 6), reader.IsDBNull(7) ? null : reader.GetString(7), reader.IsDBNull(8) ? null : reader.GetString(8));
+    }
+
+    // Queues another delivery of a finished receipt. The status condition makes the update
+    // a no-op while a delivery is already queued or in flight.
+    public async Task<bool> RequestResendAsync(string tripId, DateTimeOffset now, CancellationToken ct)
+    {
+        await using var connection = payments.CreateConnection();
+        await connection.OpenAsync(ct);
+        await using var command = new MySqlCommand("""
+            UPDATE payment_receipts
+            SET status = 'Pending', attempts = 0, next_attempt_at = @now, last_error = NULL,
+                resend_count = resend_count + 1, last_requested_at = @now
+            WHERE trip_id = @trip AND status IN ('Sent', 'Failed')
+            """, connection);
+        command.Parameters.AddWithValue("@now", now.UtcDateTime);
+        command.Parameters.AddWithValue("@trip", tripId);
+        return await command.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    private static DateTimeOffset? Utc(MySqlDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? null : new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(ordinal), DateTimeKind.Utc));
+
     // Claims one due receipt with a lease, so concurrent senders never take the same row.
     // A sender that crashed mid-send leaves an expired lease, which makes the row due again.
     public async Task<(ReceiptContent Content, int Attempts, string Token)?> ClaimNextAsync(DateTimeOffset now, CancellationToken ct)
