@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "dev"
+  path_instructions:
+    - path: "src/**/Data/**"
+      instructions: >-
+        ADO.NET only, no ORM. Every query must use MySqlCommand parameters.
+        Flag any SQL built with string concatenation or interpolation.
+        Payment changes and the processed-event inbox must stay in one transaction.
+    - path: "src/**/Services/**"
+      instructions: >-
+        Money is C# decimal only. Flag float/double. Never log card data,
+        connection strings, API keys or session cookies.
+    - path: "tests/**"
+      instructions: >-
+        Check that tests assert real behaviour and cover edge cases (duplicate
+        events, stale fares, settled payments), not just that the code runs.
