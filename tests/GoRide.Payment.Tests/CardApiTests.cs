@@ -12,8 +12,7 @@ using Xunit;
 namespace GoRide.Payment.Tests;
 
 // In-app demo card payments end to end against MySQL: saved cards, Stripe-like charges and
-// declines, the confirmation and email receipt, cash with driver confirmation, and the
-// local-only completion of simulated rides.
+// declines, the confirmation and email receipt, shared status, and local-only demo rides.
 public sealed class CardApiTests
 {
     [MySqlFact]
@@ -71,10 +70,35 @@ public sealed class CardApiTests
         var cards = await Cards(rider);
         Assert.Single(cards);
         await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("5555555555554444")), 409, "CARD_LIMIT_REACHED");
+        Assert.Equal(visa.GetProperty("cardId").GetString(), (await Cards(rider)).Single().GetProperty("cardId").GetString());
 
-        // The full number is never stored or returned.
-        Assert.Equal(0L, await Scalar(db, "SELECT COUNT(*) FROM payment_cards WHERE CONCAT_WS('|', card_id, last4, fingerprint, holder_name) LIKE '%4242424242424242%'"));
+        // Inspect every persisted field: masked card data and operational metadata only.
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new MySqlCommand("SELECT * FROM payment_cards", connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(new[] { "card_id", "rider_id", "brand", "last4", "exp_month", "exp_year", "holder_name",
+                "test_behaviour", "fingerprint", "is_default", "created_at" },
+                Enumerable.Range(0, reader.FieldCount).Select(reader.GetName));
+            Assert.Equal("Visa", reader.GetString("brand"));
+            Assert.Equal("4242", reader.GetString("last4"));
+            Assert.Equal(12, reader.GetInt32("exp_month"));
+            Assert.Equal(2030, reader.GetInt32("exp_year"));
+            for (var i = 0; i < reader.FieldCount; i++)
+                Assert.DoesNotContain("4242424242424242", Convert.ToString(reader.GetValue(i)));
+            Assert.False(await reader.ReadAsync());
+        }
         Assert.DoesNotContain("4242424242424242", JsonSerializer.Serialize(cards));
+        Assert.False(visa.TryGetProperty("number", out _));
+        Assert.False(visa.TryGetProperty("cvc", out _));
+
+        // The canonical schema is also safe to reapply with an existing saved card.
+        var beforeSchema = await rider.GetStringAsync("/payments/cards");
+        await db.ApplySchemaAsync();
+        await db.ApplySchemaAsync();
+        Assert.Equal(beforeSchema, await rider.GetStringAsync("/payments/cards"));
 
         await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("4242424242424242")), 409, "CARD_LIMIT_REACHED");
         using (var other = Client(app, "other"))
@@ -88,10 +112,11 @@ public sealed class CardApiTests
         // Removing the only card allows a manually saved replacement.
         Assert.Equal(HttpStatusCode.NoContent, (await rider.DeleteAsync($"/payments/cards/{visa.GetProperty("cardId").GetString()}")).StatusCode);
         Assert.Empty(await Cards(rider));
+        Assert.Equal(0L, await db.Count("payment_cards"));
+        await CheckoutApiTests.Error(await rider.DeleteAsync($"/payments/cards/{visa.GetProperty("cardId").GetString()}"), 404, "CARD_NOT_FOUND");
         var replacement = await AddCard(rider, "5555555555554444");
         Assert.True(replacement.GetProperty("isDefault").GetBoolean());
         Assert.Single(await Cards(rider));
-        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await rider.GetAsync("/payments/cards/test-cards")).StatusCode);
     }
 
     [MySqlFact]
@@ -151,6 +176,7 @@ public sealed class CardApiTests
         foreach (var response in results) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var bodies = await Task.WhenAll(results.Select(r => r.Content.ReadFromJsonAsync<JsonElement>()));
         Assert.Single(bodies, b => !b.GetProperty("alreadyPaid").GetBoolean());
+        Assert.Single(bodies.Select(b => b.GetProperty("confirmation").GetProperty("confirmationId").GetString()).Distinct());
         var confirmation = bodies[0].GetProperty("confirmation");
         Assert.Equal(725.50m, confirmation.GetProperty("amount").GetDecimal());
         Assert.Equal("VISA", confirmation.GetProperty("cardBrand").GetString());
@@ -158,6 +184,9 @@ public sealed class CardApiTests
         Assert.StartsWith("demo_", confirmation.GetProperty("providerReference").GetString());
         Assert.Equal(1L, await db.Count("payment_confirmations"));
         Assert.Equal(1L, await db.Count("payment_receipts"));
+        Assert.Equal(1L, await db.Count("payment_checkouts"));
+        Assert.Equal(1L, await db.Count("payment_verifications"));
+        foreach (var response in results) response.Dispose();
 
         var status = await rider.GetFromJsonAsync<JsonElement>($"/payments/{evt.TripId}/status");
         Assert.Equal("Paid", status.GetProperty("status").GetString());
@@ -226,7 +255,7 @@ public sealed class CardApiTests
     }
 
     [MySqlFact]
-    public async Task CashIsPaidOnlyWhenTheDriverConfirmsIt()
+    public async Task RiderAndDriverCanReadCardStatusBeforeAndAfterPayment()
     {
         await using var db = await TestDatabase.CreateAsync();
         await using var app = new PaymentApplication(db.ConnectionString);
@@ -238,23 +267,52 @@ public sealed class CardApiTests
         Assert.Equal("Pending", waiting.GetProperty("status").GetString());
         Assert.Equal(725.50m, waiting.GetProperty("amount").GetDecimal());
 
-        await CheckoutApiTests.Error(await driver.PostAsJsonAsync($"/payments/{evt.TripId}/cash/confirm", new { }), 409, "CASH_NOT_SELECTED");
-        using (var cash = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/cash", new { }))
-            Assert.Equal("AwaitingCash", (await cash.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, waiting.GetProperty("paidAt").ValueKind);
+        Assert.Equal(await rider.GetStringAsync($"/payments/{evt.TripId}/status"), await driver.GetStringAsync($"/payments/{evt.TripId}/status"));
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card }), 409, "PAYMENT_NOT_PENDING");
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/cash/confirm", new { }), 403, "PAYMENT_FORBIDDEN");
+        await CheckoutApiTests.Error(await driver.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card }), 403, "PAYMENT_FORBIDDEN");
+        (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card })).EnsureSuccessStatusCode();
 
-        foreach (var _ in Enumerable.Range(0, 2))
+        var paid = await driver.GetFromJsonAsync<JsonElement>($"/payments/{evt.TripId}/status");
+        Assert.Equal("Paid", paid.GetProperty("status").GetString());
+        Assert.Equal("Card", paid.GetProperty("method").GetString());
+        Assert.Equal("VISA", paid.GetProperty("cardBrand").GetString());
+        Assert.Equal("4242", paid.GetProperty("cardLast4").GetString());
+        Assert.Equal(JsonValueKind.String, paid.GetProperty("paidAt").ValueKind);
+        Assert.Equal(await rider.GetStringAsync($"/payments/{evt.TripId}/status"), await driver.GetStringAsync($"/payments/{evt.TripId}/status"));
+        using var anonymous = app.CreateClient();
+        await CheckoutApiTests.Error(await anonymous.GetAsync($"/payments/{evt.TripId}/status"), 401, "AUTHENTICATION_REQUIRED");
+    }
+
+    [MySqlFact]
+    public async Task RetryingTheSameChargeAfterRestartAndCardDeletionReturnsTheOriginalPayment()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var evt = PaymentRulesTests.Completion();
+        string? cardId;
+        JsonElement confirmation;
+        await using (var app = new PaymentApplication(db.ConnectionString))
+        using (var rider = Client(app, "rider-1-email"))
         {
-            using var confirmed = await driver.PostAsync($"/payments/{evt.TripId}/cash/confirm", null);
-            var body = await confirmed.Content.ReadFromJsonAsync<JsonElement>();
-            Assert.Equal("Paid", body.GetProperty("status").GetString());
-            Assert.Equal("Cash", body.GetProperty("method").GetString());
+            (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
+            cardId = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
+            using var response = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId });
+            response.EnsureSuccessStatusCode();
+            var first = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.False(first.GetProperty("alreadyPaid").GetBoolean());
+            confirmation = first.GetProperty("confirmation").Clone();
+            Assert.Equal(HttpStatusCode.NoContent, (await rider.DeleteAsync($"/payments/cards/{cardId}")).StatusCode);
         }
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/cash", new { }), 409, "PAYMENT_SETTLED");
-        // Cash has no card receipt.
-        Assert.Equal(0L, await db.Count("payment_receipts"));
+        await using var restarted = new PaymentApplication(db.ConnectionString);
+        using var retry = Client(restarted, "rider-1-email");
+        using var retried = await retry.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId });
+        retried.EnsureSuccessStatusCode();
+        var result = await retried.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Paid", result.GetProperty("status").GetString());
+        Assert.True(result.GetProperty("alreadyPaid").GetBoolean());
+        Assert.Equal(confirmation.GetRawText(), result.GetProperty("confirmation").GetRawText());
+        foreach (var table in new[] { "payment_checkouts", "payment_verifications", "payment_confirmations", "payment_receipts" })
+            Assert.Equal(1L, await db.Count(table));
     }
 
     [MySqlFact]

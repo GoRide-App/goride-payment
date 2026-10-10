@@ -107,7 +107,9 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
         LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id
         LEFT JOIN payment_verifications ON payments.trip_id = payment_verifications.trip_id
         LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id
+        LEFT JOIN payment_contacts ON payments.trip_id = payment_contacts.trip_id
         LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id
+        LEFT JOIN processed_payment_events ON payments.trip_id = processed_payment_events.trip_id
         LEFT JOIN payment_cards ON FALSE LIMIT 1
         """, connection);
     await command.ExecuteScalarAsync(ct);

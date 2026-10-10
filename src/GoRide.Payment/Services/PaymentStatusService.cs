@@ -5,12 +5,12 @@ using GoRide.Payment.Models;
 
 namespace GoRide.Payment.Services;
 
-// What both the rider and the driver see about a trip's payment. The driver app uses it
-// to stay on the trip until the rider has paid.
+// What both the rider and the driver see about a trip's payment.
+// This status never requires the driver to wait for payment.
 public sealed record PaymentStatusView(string TripId, string Status, string? Method, decimal Amount, string Currency,
     DateTimeOffset? PaidAt, string? CardBrand, string? CardLast4);
 
-public sealed class PaymentStatusService(PaymentStore payments, CheckoutStore checkouts, ConfirmationStore confirmations,
+public sealed class PaymentStatusService(PaymentStore payments, ConfirmationStore confirmations,
     TripCompletionService completions, TimeProvider clock)
 {
     // Null while the completed trip has not reached the payment service yet.
@@ -22,21 +22,6 @@ public sealed class PaymentStatusService(PaymentStore payments, CheckoutStore ch
         if (userId != payment.RiderId && userId != payment.DriverId)
             throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only this trip's rider and driver can view its payment.");
         return await ViewAsync(payment, ct);
-    }
-
-    public async Task<PaymentStatusView> ChooseCashAsync(string tripId, string riderId, CancellationToken ct)
-    {
-        PaymentRules.ValidateId(tripId, "tripId");
-        await using var tripLock = await checkouts.LockAsync(tripId, ct);
-        return await ViewAsync(await payments.UpdateAsync(tripId, payment => PaymentRules.ChooseCash(payment, riderId), ct), ct);
-    }
-
-    public async Task<PaymentStatusView> ConfirmCashAsync(string tripId, string driverId, CancellationToken ct)
-    {
-        PaymentRules.ValidateId(tripId, "tripId");
-        await using var tripLock = await checkouts.LockAsync(tripId, ct);
-        var now = clock.GetUtcNow();
-        return await ViewAsync(await payments.UpdateAsync(tripId, payment => PaymentRules.ConfirmCash(payment, driverId, now), ct), ct);
     }
 
     // Local demo only: a simulated ride has no trip service record, so the rider app reports

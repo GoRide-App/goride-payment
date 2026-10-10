@@ -35,23 +35,6 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
         return Ok(await cardPayments.PayAsync(tripId, User.FindFirstValue("sub")!, request.CardId, RiderContact.From(User), ct));
     }
 
-    [HttpPost("{tripId}/cash")]
-    public async Task<IActionResult> ChooseCash(string tripId,
-        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CashRequest? request, CancellationToken ct)
-    {
-        Response.Headers.CacheControl = "no-store";
-        return Ok(await statuses.ChooseCashAsync(tripId, User.FindFirstValue("sub")!, ct));
-    }
-
-    // The driver confirms the rider's cash; only then is the trip paid.
-    [HttpPost("{tripId}/cash/confirm")]
-    public async Task<IActionResult> ConfirmCash(string tripId,
-        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CashRequest? request, CancellationToken ct)
-    {
-        Response.Headers.CacheControl = "no-store";
-        return Ok(await statuses.ConfirmCashAsync(tripId, User.FindFirstValue("sub")!, ct));
-    }
-
     // Local demo only (Development with DemoTrips:Enabled): records a simulated ride the
     // trip service never saw, so it can be paid and receipted like a real one.
     [HttpPost("demo-completions")]
@@ -125,9 +108,6 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
 // Only the saved card is chosen; amount, currency and identity come from the server.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PayRequest(string? CardId);
-
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record CashRequest;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DemoCompletionRequest(string? TripId, decimal? FinalFare);

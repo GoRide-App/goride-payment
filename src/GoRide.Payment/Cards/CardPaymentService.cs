@@ -34,7 +34,7 @@ public sealed class CardPaymentService(PaymentStore payments, CheckoutStore chec
             throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only this trip's rider can pay for it.");
         if (payment.Status is "Paid" or "Charged" && await confirmations.GetAsync(tripId, ct) is { } paid)
             return new("Paid", true, paid);
-        PaymentRules.SelectCard(payment, riderId); // Settled, disabled and cash payments cannot be charged.
+        PaymentRules.SelectCard(payment, riderId); // Ownership and payment-state guards.
         if (payment.FinalFare <= 0 || payment.FinalFare * 100 > 99999999)
             throw new PaymentException(409, "CHECKOUT_AMOUNT_UNSUPPORTED", "This fare cannot be paid by card.");
         var (card, behaviour) = await cards.GetAsync(riderId, id, ct) ?? throw CardService.NotFound();

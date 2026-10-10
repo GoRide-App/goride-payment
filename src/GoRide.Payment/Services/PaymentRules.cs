@@ -122,28 +122,4 @@ public static class PaymentRules
         // Selection alone never charges, increments attempts, or marks the trip paid.
         return payment with { Method = "Card" };
     }
-
-    // The rider pays the driver in cash; the trip stays unpaid until the driver confirms it.
-    public static PaymentRecord ChooseCash(PaymentRecord payment, string riderId)
-    {
-        if (payment.RiderId != riderId)
-            throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only the rider who took this trip can choose how to pay.");
-        if (payment.Status is "Paid" or "Charged")
-            throw new PaymentException(409, "PAYMENT_SETTLED", "This trip has already been paid.");
-        if (payment.Status == "AwaitingCash") return payment;
-        if (payment.Status != "Pending")
-            throw new PaymentException(409, "PAYMENT_NOT_PENDING", "This payment cannot be changed to cash.");
-        return payment with { Method = "Cash", Status = "AwaitingCash" };
-    }
-
-    // Only the trip's driver can say the cash was received. Repeating it is harmless.
-    public static PaymentRecord ConfirmCash(PaymentRecord payment, string driverId, DateTimeOffset at)
-    {
-        if (payment.DriverId != driverId)
-            throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only this trip's driver can confirm a cash payment.");
-        if (payment.Status == "Paid" && payment.Method == "Cash") return payment;
-        if (payment.Status != "AwaitingCash")
-            throw new PaymentException(409, "CASH_NOT_SELECTED", "The rider has not chosen to pay in cash.");
-        return payment with { Status = "Paid", ProcessedAt = at };
-    }
 }

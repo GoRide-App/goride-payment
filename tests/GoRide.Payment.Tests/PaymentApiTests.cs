@@ -41,6 +41,23 @@ public sealed class PaymentApiTests
     }
 
     [MySqlFact]
+    public async Task HealthRequiresEveryApplicationTable()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        await using var app = new PaymentApplication(db.ConnectionString);
+        using var client = app.CreateClient();
+        foreach (var table in new[] { "payments", "payment_checkouts", "payment_verifications", "payment_confirmations",
+            "payment_contacts", "payment_receipts", "processed_payment_events", "payment_cards" })
+        {
+            await db.ExecuteAsync($"RENAME TABLE {table} TO temporarily_unavailable");
+            await AssertError(await client.GetAsync("/health"), 503, "PAYMENT_STORE_UNAVAILABLE");
+            await db.ExecuteAsync($"RENAME TABLE temporarily_unavailable TO {table}");
+            using var restored = await client.GetAsync("/health");
+            Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+        }
+    }
+
+    [MySqlFact]
     public async Task CompletedTripCanSelectCardThroughHttpAndRetryAcrossRestart()
     {
         await using var db = await TestDatabase.CreateAsync();
