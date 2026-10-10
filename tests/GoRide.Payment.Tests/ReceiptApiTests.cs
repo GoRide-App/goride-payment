@@ -6,6 +6,7 @@ using GoRide.Payment.Checkout;
 using GoRide.Payment.Models;
 using GoRide.Payment.Receipts;
 using Microsoft.Extensions.DependencyInjection;
+using MySqlConnector;
 using Xunit;
 
 namespace GoRide.Payment.Tests;
@@ -15,6 +16,42 @@ namespace GoRide.Payment.Tests;
 public sealed class ReceiptApiTests
 {
     private static readonly DateTimeOffset Start = new(2026, 10, 9, 10, 0, 0, TimeSpan.Zero);
+
+    [MySqlFact]
+    public async Task SchemaUpgradeAndReapplyPreservePaidTripAndReceipt()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        await using var app = new PaymentApplication(db.ConnectionString, clock: new ManualClock(Start));
+        using var client = EmailRider(app);
+        var (trip, form) = await StartCheckout(client);
+        (await Notify(client, form, "320027150009")).EnsureSuccessStatusCode();
+        Assert.True(await Dispatcher(app).SendNextAsync(default));
+        var payment = await client.GetStringAsync($"/payments/{trip}");
+        var confirmation = await client.GetStringAsync($"/payments/{trip}/confirmation");
+        var receipt = await client.GetStringAsync($"/payments/{trip}/receipt");
+
+        // Reproduce the original SCRUM-104 column before upgrading a populated database.
+        await db.ExecuteAsync("ALTER TABLE payment_confirmations MODIFY COLUMN confirmation_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL");
+        await db.ApplySchemaAsync();
+        await db.ApplySchemaAsync();
+
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.OpenAsync();
+        await using var column = new MySqlCommand("""
+            SELECT column_type FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'payment_confirmations' AND column_name = 'confirmation_id'
+            """, connection);
+        Assert.Equal("varchar(36)", await column.ExecuteScalarAsync());
+        Assert.Equal(payment, await client.GetStringAsync($"/payments/{trip}"));
+        Assert.Equal(confirmation, await client.GetStringAsync($"/payments/{trip}/confirmation"));
+        Assert.Equal(receipt, await client.GetStringAsync($"/payments/{trip}/receipt"));
+        foreach (var table in new[] { "payments", "processed_payment_events", "payment_checkouts",
+            "payment_verifications", "payment_confirmations", "payment_contacts", "payment_receipts" })
+            Assert.Equal(1L, await db.Count(table));
+        Assert.False(await Dispatcher(app).SendNextAsync(default));
+        using var health = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+    }
 
     [MySqlFact]
     public async Task PaidCardPaymentSendsExactlyOneReceiptEvenWhenPayHereRedelivers()
