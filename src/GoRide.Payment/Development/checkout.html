@@ -10,7 +10,7 @@
 <body>
   <header class="topbar"><a class="brand" href="/dev/payments" aria-label="GoRide test checkout"><span class="brand-mark">G</span> GoRide<span class="brand-divider"></span><span class="workspace">Developer tools</span></a><span class="test-badge"><span></span> PayHere sandbox</span></header>
   <main>
-    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-103</div>
+    <div class="eyebrow">PAYMENT SANDBOX <span>/</span> SCRUM-103–104</div>
     <h1>A completed ride.<br>A verified payment.</h1>
     <p class="intro">Create a test ride, open the PayHere sandbox checkout, then confirm the payment the way PayHere’s server would. No real money moves.</p>
     <div id="return-notice" class="notice" role="status" hidden></div>
@@ -45,6 +45,14 @@
           <div class="fare-display"><span>LKR</span> <strong id="total">—</strong></div>
           <dl><div><dt>Payment method</dt><dd id="method">—</dd></div><div><dt>Payment status</dt><dd id="status">—</dd></div><div><dt>Environment</dt><dd>PayHere sandbox</dd></div></dl>
           <div class="trip-reference"><span>TRIP REFERENCE</span><code id="trip-id">Create a test ride</code></div>
+        </section>
+        <section class="card receipt" id="confirmation" aria-labelledby="confirmation-title" hidden>
+          <div class="receipt-heading"><span class="tiny-mark">✓</span><span class="pill">PAYMENT CONFIRMED</span></div>
+          <h2 id="confirmation-title">Payment successful</h2>
+          <p class="muted">What the rider sees in the app (SCRUM-104)</p>
+          <div class="fare-display"><span>LKR</span> <strong id="confirmed-amount">—</strong></div>
+          <dl><div><dt>Card</dt><dd id="confirmed-card">—</dd></div><div><dt>PayHere reference</dt><dd id="confirmed-reference">—</dd></div><div><dt>Paid at</dt><dd id="confirmed-at">—</dd></div><div><dt>Shown to rider</dt><dd id="confirmed-ack">Not yet</dd></div></dl>
+          <button id="acknowledge" class="button secondary" type="button">Got it <span aria-hidden="true">✓</span></button>
         </section>
         <section class="test-card" aria-labelledby="test-card-title"><div class="test-card-title"><h3 id="test-card-title">A card for your test drive</h3><span>VISA</span></div><p class="card-number">4916 2175 0161 1292</p><p>Use any future expiry date and any three-digit CVC on the sandbox page.</p><a href="https://support.payhere.lk/sandbox-and-testing" target="_blank" rel="noreferrer">More PayHere sandbox cards ↗</a></section>
       </aside>
