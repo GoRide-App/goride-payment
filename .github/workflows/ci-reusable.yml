@@ -1,0 +1,64 @@
+name: CI (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  SOLUTION: GoRide.Payment.slnx
+  DOTNET_VERSION: "10.0.x"
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+    build-test:
+        name: Build & Test
+        runs-on: ubuntu-latest
+        services:
+          mysql:
+            image: mysql:8.0
+            env:
+              MYSQL_ROOT_PASSWORD: ci-test-password
+              MYSQL_ROOT_HOST: "%"
+            ports:
+              - 3306:3306
+            options: >-
+              --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-test-password"
+              --health-interval=10s --health-timeout=5s --health-retries=12
+        env:
+          PAYMENT_TEST_MYSQL: "Server=127.0.0.1;Port=3306;User ID=root;Password=ci-test-password;SslMode=Disabled"
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v4
+    
+          - name: Setup .NET
+            uses: actions/setup-dotnet@v4
+            with:
+              dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+          - name: Restore
+            run: dotnet restore "$SOLUTION"
+    
+          - name: Build (Release)
+            run: dotnet build "$SOLUTION" --no-restore -c Release 2>&1 | tee build.log
+    
+          - name: Test
+            run: |
+              dotnet test "$SOLUTION" --no-build -c Release \
+                --logger "trx;LogFileName=payment.trx" \
+                --results-directory ./TestResults
+    
+          - name: Upload test results
+            if: always()
+            uses: actions/upload-artifact@v4
+            with:
+              name: test-results
+              path: ./TestResults
+              if-no-files-found: ignore
+              retention-days: 14
