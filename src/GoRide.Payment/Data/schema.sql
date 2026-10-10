@@ -115,3 +115,21 @@ CREATE TABLE IF NOT EXISTS processed_payment_events (
     processed_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     INDEX ix_payment_events_trip (trip_id)
 ) ENGINE=InnoDB;
+
+-- Demo cards a rider saved for in-app payment. Only published test card numbers are
+-- accepted; the full number and CVC are never stored, only brand, last four and expiry.
+CREATE TABLE IF NOT EXISTS payment_cards (
+    card_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    rider_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    brand VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    last4 CHAR(4) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    exp_month TINYINT UNSIGNED NOT NULL,
+    exp_year SMALLINT UNSIGNED NOT NULL,
+    holder_name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    test_behaviour VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at DATETIME(6) NOT NULL,
+    UNIQUE KEY ux_card_rider_fingerprint (rider_id, fingerprint),
+    INDEX ix_card_rider (rider_id, created_at)
+) ENGINE=InnoDB;

@@ -32,7 +32,8 @@ public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkou
             throw new PaymentException(409, "CHECKOUT_RECONCILIATION_REQUIRED", "A card payment for this trip needs review before another checkout.");
         if (attempt is not null && outcomes.LastOrDefault(o => o.OrderId == attempt.OrderId).Outcome == VerificationOutcome.Pending)
             throw new PaymentException(409, "CHECKOUT_AWAITING_VERIFICATION", "Your card payment is still being confirmed. Please wait a moment.");
-        if (attempt is null || attempt.AmountMinor != amountMinor || attempt.Currency != PayHereSettings.Currency)
+        if (attempt is null || !attempt.OrderId.StartsWith("goride-", StringComparison.Ordinal)
+            || attempt.AmountMinor != amountMinor || attempt.Currency != PayHereSettings.Currency)
         {
             attempt = new(tripId, "goride-" + Guid.NewGuid().ToString("N"), amountMinor, PayHereSettings.Currency,
                 urls.Return, urls.Cancel, clock.GetUtcNow());

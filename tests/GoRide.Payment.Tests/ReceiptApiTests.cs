@@ -78,9 +78,9 @@ public sealed class ReceiptApiTests
         Assert.Equal(1L, await db.Count("payment_receipts"));
 
         var sent = await Receipt(client, trip);
-        Assert.Equal(ReceiptStatus.Sent, sent.Status);
+        Assert.Equal(ReceiptStatus.Logged, sent.Status);
         Assert.Equal(1, sent.Attempts);
-        Assert.Equal(Start, sent.SentAt);
+        Assert.Null(sent.SentAt);
         Assert.Equal(Start + ReceiptRules.ResendCooldown, sent.ResendAvailableAt);
         var email = LogEmailSender.Find(sent.ReceiptId)!;
         Assert.Equal(TestRider.Email, email.To);
@@ -156,7 +156,7 @@ public sealed class ReceiptApiTests
         clock.Advance(ReceiptRules.ResendCooldown);
         await CheckoutApiTests.Error(await Resend(client, trip), 429, "RECEIPT_RESEND_LIMIT");
         var final = await Receipt(client, trip);
-        Assert.Equal(ReceiptStatus.Sent, final.Status);
+        Assert.Equal(ReceiptStatus.Logged, final.Status);
         Assert.False(final.CanResend);
         Assert.Equal(0, final.ResendsLeft);
         Assert.Equal(1L, await db.Count("payment_receipts"));
@@ -237,7 +237,7 @@ public sealed class ReceiptApiTests
         clock.Advance(ReceiptRules.Lease + TimeSpan.FromSeconds(1));
         Assert.True(await dispatcher.SendNextAsync(default));
         var receipt = await Receipt(client, trip);
-        Assert.Equal(ReceiptStatus.Sent, receipt.Status);
+        Assert.Equal(ReceiptStatus.Logged, receipt.Status);
         Assert.Equal(2, receipt.Attempts);
     }
 
@@ -258,7 +258,7 @@ public sealed class ReceiptApiTests
         Assert.True(await Dispatcher(app).SendNextAsync(default));
 
         var receipt = (await client.GetFromJsonAsync<ReceiptView>($"/dev/payments/trips/{trip}/receipt"))!;
-        Assert.Equal(ReceiptStatus.Sent, receipt.Status);
+        Assert.Equal(ReceiptStatus.Logged, receipt.Status);
         Assert.Equal("d***r@goride.test", receipt.Recipient);
         using var preview = await client.GetAsync($"/dev/payments/trips/{trip}/receipt/preview");
         preview.EnsureSuccessStatusCode();

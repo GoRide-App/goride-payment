@@ -41,6 +41,23 @@ public sealed class PaymentApiTests
     }
 
     [MySqlFact]
+    public async Task HealthRequiresEveryApplicationTable()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        await using var app = new PaymentApplication(db.ConnectionString);
+        using var client = app.CreateClient();
+        foreach (var table in new[] { "payments", "payment_checkouts", "payment_verifications", "payment_confirmations",
+            "payment_contacts", "payment_receipts", "processed_payment_events", "payment_cards" })
+        {
+            await db.ExecuteAsync($"RENAME TABLE {table} TO temporarily_unavailable");
+            await AssertError(await client.GetAsync("/health"), 503, "PAYMENT_STORE_UNAVAILABLE");
+            await db.ExecuteAsync($"RENAME TABLE temporarily_unavailable TO {table}");
+            using var restored = await client.GetAsync("/health");
+            Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
+        }
+    }
+
+    [MySqlFact]
     public async Task CompletedTripCanSelectCardThroughHttpAndRetryAcrossRestart()
     {
         await using var db = await TestDatabase.CreateAsync();
@@ -276,7 +293,9 @@ internal sealed class PaymentApplication(string connectionString,
             // Tests drive receipt delivery explicitly; no background sender, and never real email
             // even if local Development settings configure Brevo.
             ["Receipts:DispatcherEnabled"] = "false",
-            ["Email:Provider"] = "Log"
+            ["Email:Provider"] = "Log",
+            // Demo card charges skip the simulated network delay.
+            ["DemoCard:ProcessingMilliseconds"] = "0"
         };
         if (settings is not null) foreach (var (key, value) in settings) values[key] = value;
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(values));
@@ -317,6 +336,7 @@ internal sealed class IdentityStub : HttpMessageHandler
             "session=rider-1" => new { userId = "rider-1" },
             "session=rider-1-email" => new { userId = "rider-1", name = "Rider One", email = TestRider.Email },
             "session=other" => new { userId = "other" },
+            "session=driver-1" => new { userId = "driver-1" },
             _ => null
         };
         return Task.FromResult(session is null ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
@@ -373,7 +393,7 @@ internal sealed class TestDatabase : IAsyncDisposable
     public async Task<long> Count(string table)
     {
         if (table is not ("payments" or "processed_payment_events" or "payment_checkouts" or "payment_verifications"
-            or "payment_confirmations" or "payment_contacts" or "payment_receipts"))
+            or "payment_confirmations" or "payment_contacts" or "payment_receipts" or "payment_cards"))
             throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();

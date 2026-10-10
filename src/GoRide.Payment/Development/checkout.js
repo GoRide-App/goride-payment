@@ -108,14 +108,15 @@ byId("acknowledge").addEventListener("click", async () => {
   catch (error) { feedback(error.message, true); }
 });
 // SCRUM-105: the email receipt is sent in the background after the payment is verified.
-const receiptStates = { Pending: "QUEUED", Sending: "SENDING", Retry: "RETRYING", Sent: "SENT", Failed: "NOT DELIVERED", NoEmail: "NO EMAIL" };
-const settled = ["Sent", "Failed", "NoEmail"];
+const receiptStates = { Pending: "QUEUED", Sending: "SENDING", Retry: "RETRYING", Sent: "SENT", Logged: "LOGGED ONLY", Failed: "NOT DELIVERED", NoEmail: "NO EMAIL" };
+const settled = ["Sent", "Logged", "Failed", "NoEmail"];
 let receiptTimer = null;
 function showReceipt(view) {
   byId("receipt-state").textContent = receiptStates[view.status] || view.status.toUpperCase();
   byId("receipt-to").textContent = view.recipient || "No email on file";
   byId("receipt-delivery").textContent = view.status === "NoEmail" ? "Not sent"
     : view.status === "Sent" ? "Delivered to the email provider"
+    : view.status === "Logged" ? "Saved locally; no email was sent"
     : view.status === "Failed" ? `Gave up after ${view.attempts} attempts`
     : view.attempts > 0 ? `Attempt ${view.attempts}, retrying` : "Waiting to send";
   byId("receipt-sent-at").textContent = view.sentAt ? new Date(view.sentAt).toLocaleString() : "—";

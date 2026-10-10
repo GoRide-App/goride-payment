@@ -86,7 +86,7 @@ public sealed class ReceiptStore(PaymentStore payments)
             UPDATE payment_receipts
             SET status = 'Pending', attempts = 0, next_attempt_at = @now, last_error = NULL,
                 resend_count = resend_count + 1, last_requested_at = @now
-            WHERE trip_id = @trip AND status IN ('Sent', 'Failed') AND recipient IS NOT NULL
+            WHERE trip_id = @trip AND status IN ('Sent', 'Logged', 'Failed') AND recipient IS NOT NULL
               AND resend_count < @max
               AND (last_requested_at IS NULL OR last_requested_at <= @cutoff)
               AND (sent_at IS NULL OR sent_at <= @cutoff)
@@ -139,14 +139,14 @@ public sealed class ReceiptStore(PaymentStore payments)
     private static async Task<(ReceiptContent Content, int Attempts)?> ReadContentAsync(MySqlConnection connection,
         string filter, string value, CancellationToken ct)
     {
-        string tripId, receiptId, recipient, currency, reference;
+        string tripId, receiptId, recipient, currency, reference, provider;
         string? name, brand, card;
         long amount;
         int attempts;
         DateTime paidAt;
         await using (var read = new MySqlCommand($"""
             SELECT r.trip_id, r.receipt_id, r.recipient, r.recipient_name, r.attempts,
-                   c.amount_minor, c.currency, c.payment_method, c.card_masked, c.provider_payment_id, c.paid_at
+                   c.amount_minor, c.currency, c.payment_method, c.card_masked, c.provider_payment_id, c.paid_at, c.provider
             FROM payment_receipts r JOIN payment_confirmations c ON c.trip_id = r.trip_id
             WHERE {filter}
             """, connection))
@@ -165,11 +165,12 @@ public sealed class ReceiptStore(PaymentStore payments)
             card = reader.IsDBNull(8) ? null : reader.GetString(8);
             reference = reader.GetString(9);
             paidAt = reader.GetDateTime(10);
+            provider = reader.GetString(11);
         }
         var payment = await PaymentStore.ReadAsync(connection, null, tripId, ct);
         var last4 = card is { Length: >= 4 } && card[^4..].All(char.IsAsciiDigit) ? card[^4..] : null;
         return (new ReceiptContent(receiptId, tripId, recipient, name, amount, currency, brand, last4, reference,
-            new DateTimeOffset(DateTime.SpecifyKind(paidAt, DateTimeKind.Utc)), payment?.Breakdown), attempts);
+            new DateTimeOffset(DateTime.SpecifyKind(paidAt, DateTimeKind.Utc)), payment?.Breakdown, provider), attempts);
     }
 
     public async Task MarkSentAsync(string tripId, string token, string provider, string messageId, DateTimeOffset at, CancellationToken ct)
@@ -178,11 +179,14 @@ public sealed class ReceiptStore(PaymentStore payments)
         await connection.OpenAsync(ct);
         await using var command = new MySqlCommand("""
             UPDATE payment_receipts
-            SET status = 'Sent', sent_at = @at, provider = @provider, provider_message_id = @message,
+            SET status = @status, sent_at = @sent, last_requested_at = @at, provider = @provider, provider_message_id = @message,
                 last_error = NULL, lease_token = NULL, lease_until = NULL
             WHERE trip_id = @trip AND lease_token = @token
             """, connection);
         command.Parameters.AddWithValue("@at", at.UtcDateTime);
+        var logged = string.Equals(provider, "Log", StringComparison.OrdinalIgnoreCase);
+        command.Parameters.AddWithValue("@status", logged ? ReceiptStatus.Logged : ReceiptStatus.Sent);
+        command.Parameters.AddWithValue("@sent", logged ? DBNull.Value : at.UtcDateTime);
         command.Parameters.AddWithValue("@provider", provider);
         command.Parameters.AddWithValue("@message", messageId.Length <= 128 ? messageId : messageId[..128]);
         command.Parameters.AddWithValue("@trip", tripId);

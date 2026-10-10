@@ -8,6 +8,7 @@ public static class ReceiptStatus
     public const string Sending = "Sending";
     public const string Retry = "Retry";
     public const string Sent = "Sent";
+    public const string Logged = "Logged";
     public const string Failed = "Failed";
     public const string NoEmail = "NoEmail";
 }
