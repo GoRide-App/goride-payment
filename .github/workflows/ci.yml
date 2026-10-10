@@ -1,3 +1,4 @@
+name: CI
 # Runs on every PR into dev/main and on direct pushes to those branches.
 # The actual steps live in ci-reusable.yml so cd.yml can run the exact same
 # checks before it deploys anything.
