@@ -26,7 +26,7 @@ public sealed record ValidatedCard(string Brand, string Last4, int ExpMonth, int
 // numbers are accepted, so nobody can enter a real card into the demo.
 public static class DemoCards
 {
-    public const int MaxCardsPerRider = 5;
+    public const int MaxCardsPerRider = 1;
 
     public static readonly IReadOnlyList<DemoTestCard> TestCards =
     [

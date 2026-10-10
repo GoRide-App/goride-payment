@@ -46,6 +46,14 @@ public sealed class BrevoEmailSenderTests
     }
 
     [Fact]
+    public async Task SuccessWithoutAMessageIdDoesNotClaimDelivery()
+    {
+        var error = await Assert.ThrowsAsync<EmailDeliveryException>(() =>
+            Sender(new StubHandler(HttpStatusCode.Created, "{}")).SendAsync(Message, default));
+        Assert.False(error.Permanent);
+    }
+
+    [Fact]
     public async Task NetworkFailuresAndMissingConfigurationAreRetried()
     {
         var offline = await Assert.ThrowsAsync<EmailDeliveryException>(() => Sender(new StubHandler(null, "")).SendAsync(Message, default));

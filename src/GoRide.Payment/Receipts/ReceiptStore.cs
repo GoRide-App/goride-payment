@@ -86,7 +86,7 @@ public sealed class ReceiptStore(PaymentStore payments)
             UPDATE payment_receipts
             SET status = 'Pending', attempts = 0, next_attempt_at = @now, last_error = NULL,
                 resend_count = resend_count + 1, last_requested_at = @now
-            WHERE trip_id = @trip AND status IN ('Sent', 'Failed') AND recipient IS NOT NULL
+            WHERE trip_id = @trip AND status IN ('Sent', 'Logged', 'Failed') AND recipient IS NOT NULL
               AND resend_count < @max
               AND (last_requested_at IS NULL OR last_requested_at <= @cutoff)
               AND (sent_at IS NULL OR sent_at <= @cutoff)
@@ -179,11 +179,14 @@ public sealed class ReceiptStore(PaymentStore payments)
         await connection.OpenAsync(ct);
         await using var command = new MySqlCommand("""
             UPDATE payment_receipts
-            SET status = 'Sent', sent_at = @at, provider = @provider, provider_message_id = @message,
+            SET status = @status, sent_at = @sent, last_requested_at = @at, provider = @provider, provider_message_id = @message,
                 last_error = NULL, lease_token = NULL, lease_until = NULL
             WHERE trip_id = @trip AND lease_token = @token
             """, connection);
         command.Parameters.AddWithValue("@at", at.UtcDateTime);
+        var logged = string.Equals(provider, "Log", StringComparison.OrdinalIgnoreCase);
+        command.Parameters.AddWithValue("@status", logged ? ReceiptStatus.Logged : ReceiptStatus.Sent);
+        command.Parameters.AddWithValue("@sent", logged ? DBNull.Value : at.UtcDateTime);
         command.Parameters.AddWithValue("@provider", provider);
         command.Parameters.AddWithValue("@message", messageId.Length <= 128 ? messageId : messageId[..128]);
         command.Parameters.AddWithValue("@trip", tripId);

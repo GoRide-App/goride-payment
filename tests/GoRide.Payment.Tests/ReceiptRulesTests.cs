@@ -58,6 +58,17 @@ public sealed class ReceiptRulesTests
     }
 
     [Fact]
+    public void LegacyLogReceiptsNeverClaimEmailWasSentAndKeepTheirCooldown()
+    {
+        var service = new ReceiptService(null!, null!, new ManualClock(Now));
+        var view = service.View(Row(ReceiptStatus.Sent, sentAt: Now));
+        Assert.Equal(ReceiptStatus.Logged, view.Status);
+        Assert.Null(view.SentAt);
+        Assert.False(view.CanResend);
+        Assert.Equal(Now + ReceiptRules.ResendCooldown, view.ResendAvailableAt);
+    }
+
+    [Fact]
     public void SentReceiptCanBeResentAfterTheCooldown()
     {
         var sent = Row(ReceiptStatus.Sent, sentAt: Now);

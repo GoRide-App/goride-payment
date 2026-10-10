@@ -1,4 +1,5 @@
 using System.Data;
+using GoRide.Payment.Checkout;
 using GoRide.Payment.Data;
 using GoRide.Payment.Services;
 using MySqlConnector;
@@ -10,7 +11,7 @@ public sealed record SavedCard(string CardId, string Brand, string Last4, int Ex
     string? HolderName, bool IsDefault, DateTimeOffset CreatedAt);
 
 // Parameterised ADO.NET access to payment_cards. Every query is scoped to the rider.
-public sealed class CardStore(PaymentStore payments)
+public sealed class CardStore(PaymentStore payments, CheckoutStore locks)
 {
     private const string Columns = "card_id, brand, last4, exp_month, exp_year, holder_name, is_default, created_at, test_behaviour";
 
@@ -42,12 +43,13 @@ public sealed class CardStore(PaymentStore payments)
     // The rider's existing rows are locked so the limit and the single default hold.
     public async Task<SavedCard> AddAsync(string riderId, ValidatedCard card, bool makeDefault, DateTimeOffset now, CancellationToken ct)
     {
+        await using var riderLock = await locks.LockCardsAsync(riderId, ct);
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var count = (await LockRiderCardsAsync(connection, transaction, riderId, ct)).Count;
         if (count >= DemoCards.MaxCardsPerRider)
-            throw new PaymentException(409, "CARD_LIMIT_REACHED", $"You can save up to {DemoCards.MaxCardsPerRider} cards. Remove one to add another.");
+            throw new PaymentException(409, "CARD_LIMIT_REACHED", "You already have a saved card. Remove it from your profile before adding a replacement.");
         var isDefault = makeDefault || count == 0;
         if (isDefault) await ClearDefaultAsync(connection, transaction, riderId, ct);
         var saved = new SavedCard(Guid.NewGuid().ToString(), card.Brand, card.Last4, card.ExpMonth, card.ExpYear,
@@ -82,6 +84,7 @@ public sealed class CardStore(PaymentStore payments)
     // Removing the default card makes the newest remaining card the default.
     public async Task<bool> DeleteAsync(string riderId, string cardId, CancellationToken ct)
     {
+        await using var riderLock = await locks.LockCardsAsync(riderId, ct);
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
@@ -95,7 +98,7 @@ public sealed class CardStore(PaymentStore payments)
             await delete.ExecuteNonQueryAsync(ct);
         }
         if (cards.Single(c => c.CardId == cardId).IsDefault
-            && cards.Where(c => c.CardId != cardId).MaxBy(c => c.CreatedAt) is { } next)
+            && cards.Where(c => c.CardId != cardId).OrderByDescending(c => c.CreatedAt).FirstOrDefault() is { CardId: not null } next)
             await MarkDefaultAsync(connection, transaction, riderId, next.CardId, ct);
         await transaction.CommitAsync(ct);
         return true;
@@ -103,6 +106,7 @@ public sealed class CardStore(PaymentStore payments)
 
     public async Task<SavedCard?> SetDefaultAsync(string riderId, string cardId, CancellationToken ct)
     {
+        await using var riderLock = await locks.LockCardsAsync(riderId, ct);
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);

@@ -22,7 +22,7 @@ public interface IEmailSender
 
 public sealed class EmailSettings(IConfiguration configuration)
 {
-    public string Provider => configuration["Email:Provider"] ?? "Log";
+    public string Provider => configuration["Email:Provider"] ?? "Brevo";
     public string FromAddress => configuration["Email:FromAddress"] ?? "";
     public string FromName => configuration["Email:FromName"] ?? "GoRide";
     public string BrevoApiKey => configuration["Email:Brevo:ApiKey"] ?? "";
@@ -57,7 +57,10 @@ public sealed class BrevoEmailSender(IHttpClientFactory clients, EmailSettings s
             if (response.IsSuccessStatusCode)
             {
                 using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-                return json.RootElement.TryGetProperty("messageId", out var id) ? id.GetString() ?? "brevo" : "brevo";
+                if (json.RootElement.TryGetProperty("messageId", out var id)
+                    && id.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(id.GetString()))
+                    return id.GetString()!;
+                throw new EmailDeliveryException("Brevo did not confirm accepting the receipt.", false);
             }
             // 401/403 mean the key or this server's IP is not allowed (an account setting), so the
             // receipt is retried until that is fixed. Other 4xx (except throttling) reject this

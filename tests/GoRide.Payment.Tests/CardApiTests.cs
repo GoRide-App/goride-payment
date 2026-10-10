@@ -5,6 +5,7 @@ using GoRide.Payment.Cards;
 using GoRide.Payment.Models;
 using GoRide.Payment.Receipts;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Mvc.Testing;
 using MySqlConnector;
 using Xunit;
 
@@ -16,6 +17,49 @@ namespace GoRide.Payment.Tests;
 public sealed class CardApiTests
 {
     [MySqlFact]
+    public async Task CardPaymentEmailsTheRegisteredAddressOnceThroughBrevo()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var mail = new BrevoCapture();
+        await using var app = new PaymentApplication(db.ConnectionString, settings: new()
+        {
+            ["Email:Provider"] = "Brevo",
+            ["Email:Brevo:ApiKey"] = "integration-test-key",
+            ["Email:FromAddress"] = "receipts@goride.test"
+        }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            services.AddHttpClient("Brevo").ConfigurePrimaryHttpMessageHandler(() => mail)));
+        using var rider = app.CreateClient();
+        rider.DefaultRequestHeaders.Add("Cookie", "session=rider-1-email");
+        var evt = PaymentRulesTests.Completion();
+        (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
+        var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
+        for (var i = 0; i < 2; i++)
+            (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card })).EnsureSuccessStatusCode();
+        var dispatcher = app.Services.GetRequiredService<ReceiptDispatcher>();
+        Assert.True(await dispatcher.SendNextAsync(default));
+        Assert.False(await dispatcher.SendNextAsync(default));
+        Assert.Equal(1, mail.Requests);
+        Assert.Equal(TestRider.Email, mail.Body.GetProperty("to")[0].GetProperty("email").GetString());
+        Assert.Contains("725.50", mail.Body.GetProperty("textContent").GetString());
+        Assert.Contains("4242", mail.Body.GetProperty("textContent").GetString());
+        var receipt = await rider.GetFromJsonAsync<JsonElement>($"/payments/{evt.TripId}/receipt");
+        Assert.Equal("Sent", receipt.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.String, receipt.GetProperty("sentAt").ValueKind);
+    }
+
+    private sealed class BrevoCapture : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        public JsonElement Body { get; private set; }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests++;
+            Body = await request.Content!.ReadFromJsonAsync<JsonElement>(ct);
+            return new(HttpStatusCode.Created) { Content = JsonContent.Create(new { messageId = "test-receipt-message" }) };
+        }
+    }
+
+    [MySqlFact]
     public async Task CardsAreSavedPerRiderWithOnlyBrandLastFourAndExpiry()
     {
         await using var db = await TestDatabase.CreateAsync();
@@ -24,17 +68,15 @@ public sealed class CardApiTests
         var visa = await AddCard(rider, "4242 4242 4242 4242");
         Assert.True(visa.GetProperty("isDefault").GetBoolean());
         Assert.Equal("4242", visa.GetProperty("last4").GetString());
-        var mastercard = await AddCard(rider, "5555555555554444", makeDefault: true);
         var cards = await Cards(rider);
-        Assert.Equal(new[] { mastercard.GetProperty("cardId").GetString(), visa.GetProperty("cardId").GetString() },
-            cards.Select(c => c.GetProperty("cardId").GetString()));
-        Assert.Equal(new[] { true, false }, cards.Select(c => c.GetProperty("isDefault").GetBoolean()));
+        Assert.Single(cards);
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("5555555555554444")), 409, "CARD_LIMIT_REACHED");
 
         // The full number is never stored or returned.
         Assert.Equal(0L, await Scalar(db, "SELECT COUNT(*) FROM payment_cards WHERE CONCAT_WS('|', card_id, last4, fingerprint, holder_name) LIKE '%4242424242424242%'"));
         Assert.DoesNotContain("4242424242424242", JsonSerializer.Serialize(cards));
 
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("4242424242424242")), 409, "CARD_ALREADY_SAVED");
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("4242424242424242")), 409, "CARD_LIMIT_REACHED");
         using (var other = Client(app, "other"))
         {
             Assert.Empty(await Cards(other));
@@ -43,12 +85,29 @@ public sealed class CardApiTests
         }
         await CheckoutApiTests.Error(await rider.DeleteAsync("/payments/cards/not-a-card"), 404, "CARD_NOT_FOUND");
 
-        // Removing the default promotes the remaining card.
-        Assert.Equal(HttpStatusCode.NoContent, (await rider.DeleteAsync($"/payments/cards/{mastercard.GetProperty("cardId").GetString()}")).StatusCode);
-        Assert.True(Assert.Single(await Cards(rider)).GetProperty("isDefault").GetBoolean());
-        foreach (var number in new[] { "4000000000000002", "4000000000009995", "4000000000000069", "4000000000000127" })
-            await AddCard(rider, number);
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/cards", Card("5555555555554444")), 409, "CARD_LIMIT_REACHED");
+        // Removing the only card allows a manually saved replacement.
+        Assert.Equal(HttpStatusCode.NoContent, (await rider.DeleteAsync($"/payments/cards/{visa.GetProperty("cardId").GetString()}")).StatusCode);
+        Assert.Empty(await Cards(rider));
+        var replacement = await AddCard(rider, "5555555555554444");
+        Assert.True(replacement.GetProperty("isDefault").GetBoolean());
+        Assert.Single(await Cards(rider));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await rider.GetAsync("/payments/cards/test-cards")).StatusCode);
+    }
+
+    [MySqlFact]
+    public async Task ConcurrentFirstCardSavesKeepOnlyOneCard()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        await using var app = new PaymentApplication(db.ConnectionString);
+        using var rider = Client(app, "rider-1");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 6).Select(i =>
+            rider.PostAsJsonAsync("/payments/cards", Card(i % 2 == 0 ? "4242424242424242" : "5555555555554444"))));
+        Assert.Single(responses, r => r.StatusCode == HttpStatusCode.Created);
+        Assert.All(responses.Where(r => r.StatusCode != HttpStatusCode.Created), r => Assert.Equal(HttpStatusCode.Conflict, r.StatusCode));
+        var saved = Assert.Single(await Cards(rider));
+        Assert.True(saved.GetProperty("isDefault").GetBoolean());
+        Assert.Equal(1L, await db.Count("payment_cards"));
+        foreach (var response in responses) response.Dispose();
     }
 
     [MySqlFact]
@@ -107,7 +166,8 @@ public sealed class CardApiTests
 
         Assert.True(await app.Services.GetRequiredService<ReceiptDispatcher>().SendNextAsync(default));
         var receipt = await rider.GetFromJsonAsync<JsonElement>($"/payments/{evt.TripId}/receipt");
-        Assert.Equal("Sent", receipt.GetProperty("status").GetString());
+        Assert.Equal("Logged", receipt.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, receipt.GetProperty("sentAt").ValueKind);
         var email = LogEmailSender.Find(receipt.GetProperty("receiptId").GetString()!)!;
         Assert.Equal(TestRider.Email, email.To);
         Assert.Contains("Paid with: VISA ending 4242", email.Text);

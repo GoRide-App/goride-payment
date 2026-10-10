@@ -9,10 +9,16 @@ namespace GoRide.Payment.Checkout;
 public sealed class CheckoutStore(PaymentStore payments)
 {
     // MySQL locks coordinate checkout, fare changes and provider verification across processes.
-    public async Task<TripLease> LockAsync(string tripId, CancellationToken ct)
+    public Task<TripLease> LockAsync(string tripId, CancellationToken ct) => LockKeyAsync("pay:", tripId, ct);
+
+    // A rider may have no card rows yet. Locking existing rows alone cannot serialize
+    // two simultaneous first-card saves under READ COMMITTED.
+    public Task<TripLease> LockCardsAsync(string riderId, CancellationToken ct) => LockKeyAsync("card:", riderId, ct);
+
+    private async Task<TripLease> LockKeyAsync(string prefix, string id, CancellationToken ct)
     {
         var connection = payments.CreateConnection();
-        var key = "pay:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(tripId)))[..60];
+        var key = prefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..(64 - prefix.Length)];
         try
         {
             await connection.OpenAsync(ct);

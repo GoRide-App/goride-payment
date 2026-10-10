@@ -33,7 +33,7 @@ public sealed class ReceiptDispatcher(IServiceScopeFactory scopes, IConfiguratio
         {
             var messageId = await sender.SendAsync(ReceiptRenderer.Render(content), ct);
             await store.MarkSentAsync(content.TripId, token, sender.Name, messageId, clock.GetUtcNow(), ct);
-            logger.LogInformation("Receipt {ReceiptId} sent via {Provider}.", content.ReceiptId, sender.Name);
+            logger.LogInformation("Receipt {ReceiptId} processed via {Provider}.", content.ReceiptId, sender.Name);
         }
         catch (EmailDeliveryException ex)
         {

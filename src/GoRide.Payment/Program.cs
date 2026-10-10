@@ -37,14 +37,17 @@ builder.Services.AddScoped<GoRide.Payment.Cards.CardStore>();
 builder.Services.AddScoped<GoRide.Payment.Cards.CardService>();
 builder.Services.AddScoped<GoRide.Payment.Cards.CardPaymentService>();
 builder.Services.AddScoped<PaymentStatusService>();
-// SCRUM-105: receipts are sent by Brevo when Email:Provider=Brevo, otherwise logged locally.
+// Receipts use Brevo by default. Log is an explicit local-preview mode and is never reported as Sent.
 builder.Services.AddSingleton<GoRide.Payment.Receipts.EmailSettings>();
 builder.Services.AddHttpClient("Brevo", client => client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
 builder.Services.AddScoped<GoRide.Payment.Receipts.IEmailSender>(sp =>
-    sp.GetRequiredService<GoRide.Payment.Receipts.EmailSettings>().UseBrevo
-        ? ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.BrevoEmailSender>(sp)
-        : ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.LogEmailSender>(sp));
+    sp.GetRequiredService<GoRide.Payment.Receipts.EmailSettings>().Provider.ToLowerInvariant() switch
+    {
+        "brevo" => ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.BrevoEmailSender>(sp),
+        "log" => ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.LogEmailSender>(sp),
+        _ => throw new InvalidOperationException("Email:Provider must be Brevo or Log.")
+    });
 builder.Services.AddSingleton<GoRide.Payment.Receipts.ReceiptDispatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GoRide.Payment.Receipts.ReceiptDispatcher>());
 builder.Services.AddSingleton<PayHereSettings>();

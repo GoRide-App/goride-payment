@@ -24,9 +24,8 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/{tripId}/confirmation/acknowledge` | Accepts exactly `{ "confirmationId": "..." }`; records that the app showed it |
 | GET | `/payments/{tripId}/receipt` | Whether the email receipt was sent (address masked) and whether it can be resent |
 | POST | `/payments/{tripId}/receipt/resend` | Accepts `{}` or no body; queues the receipt again (202) |
-| GET/POST | `/payments/cards` | List or save the rider's demo cards (test numbers only; only brand, last four and expiry are kept) |
+| GET/POST | `/payments/cards` | List or manually save the rider's single test card (test numbers only; only brand, last four and expiry are kept) |
 | DELETE, POST | `/payments/cards/{cardId}`, `/payments/cards/{cardId}/default` | Remove a card, or make it the default |
-| GET | `/payments/cards/test-cards` | The demo test card numbers and what each does |
 | POST | `/payments/{tripId}/pay` | Accepts exactly `{ "cardId": "..." }`; charges the saved demo card in-app |
 | GET | `/payments/{tripId}/status` | Payment status for the trip's rider and driver, or JSON `null` before completion arrives |
 | POST | `/payments/{tripId}/cash`, `/payments/{tripId}/cash/confirm` | Rider chooses cash; the driver confirms receiving it |
@@ -144,13 +143,13 @@ The development page shows the same confirmation after **Simulate successful pay
 
 After a card payment is verified, the rider gets an email receipt with the verified amount, the fare breakdown, the card brand and last four digits, the PayHere reference, the trip reference, a receipt number and the payment time in Sri Lanka time.
 
-**Exactly once.** The receipt row in `payment_receipts` is written in the **same transaction** that marks the trip `Paid` (SCRUM-103), keyed by trip, so PayHere redeliveries, retries after a crash or a second payment never create a second receipt. The amount is read from the verified confirmation, so the receipt always matches the true final amount.
+**One receipt per payment.** The receipt row in `payment_receipts` is written in the **same transaction** that marks the trip `Paid` (SCRUM-103), keyed by trip, so PayHere redeliveries, retries after a crash or a second payment never create a second receipt. The amount is read from the verified confirmation, so the receipt always matches the true final amount.
 
 **Address.** At checkout the rider's email from the verified identity session is saved in `payment_contacts`. PayHere's placeholder contact details are never stored or emailed. A rider without a deliverable email gets a `NoEmail` receipt instead of a send.
 
 **Delivery.** `payment_receipts` is an outbox. A background sender claims one due row at a time with a lease (`UPDATE ... LIMIT 1`, so several instances never take the same row), sends it and records the provider message ID. Transient failures retry after 30 s, 2 min, 10 min and 30 min. After 5 attempts, or when the provider permanently rejects the message, the receipt is `Failed`. A sender that crashes mid-send leaves an expired lease (2 min), and the row is claimed again.
 
-Statuses: `Pending`, `Sending`, `Retry`, `Sent`, `Failed`, `NoEmail`.
+Statuses: `Pending`, `Sending`, `Retry`, `Sent`, `Logged`, `Failed`, `NoEmail`. `Sent` means the email provider accepted the message; it does not guarantee inbox delivery. `Logged` means a local preview only, with no email sent and no `sentAt`. Provider retries after an ambiguous network failure can redeliver an email; a unique receipt row is not an exactly-once email guarantee.
 
 ```json
 {
@@ -171,7 +170,7 @@ Errors: `INVALID_REQUEST` (400, invalid trip ID, unknown fields or malformed JSO
 
 ### Sending real email with Brevo (free)
 
-By default `Email__Provider=Log`: receipts are rendered and logged locally instead of sent. To send real email:
+By default `Email__Provider=Brevo`: receipt emails require a configured key and verified sender. Missing configuration fails delivery with retries; it never reports a successful email. Set `Email__Provider=Log` explicitly for local previews, which report `Logged`. To configure delivery:
 
 1. Create a free account at [brevo.com](https://www.brevo.com) (300 emails a day).
 2. Under **Senders, Domains & Dedicated IPs**, add and verify the address receipts are sent from.
@@ -182,24 +181,17 @@ Receipts are sent through Brevo's transactional API (`POST https://api.brevo.com
 
 The development page has an optional **Receipt email** field on the test ride. After **Simulate successful payment** it shows the receipt status, a **Preview email** link with the exact email, and **Resend**.
 
-## In-app demo cards
+## One saved test card
 
-For local demos the rider app can pay in-app, like a Stripe card-on-file payment, without leaving for PayHere's page. Only published test numbers are accepted, so a real card can never be entered:
+The rider manually adds a card in **Profile → Payment methods**, or saves it during checkout. There is no card catalogue or automatic card seeding. Each account can save one card; it is selected automatically for future payments. To replace it, remove the existing card, then add the replacement. Existing accounts with multiple cards from an older version can remove them without losing payment history.
 
-| Card | Result |
-| --- | --- |
-| `4242 4242 4242 4242`, `5555 5555 5555 4444`, `4916 2175 0161 1292` | Payment succeeds |
-| `4000 0000 0000 0002` | `CARD_DECLINED` |
-| `4000 0000 0000 9995` | `INSUFFICIENT_FUNDS` |
-| `4000 0000 0000 0069` | `EXPIRED_CARD` |
-| `4000 0000 0000 0127` | `INCORRECT_CVC` |
-| `4000 0000 0000 0119` | `PROCESSING_ERROR` |
+For a successful test payment, manually enter `4242 4242 4242 4242`, any future expiry, and a three-digit CVC. This is a simulation: no real funds move. The backend retains fault-injection numbers for automated decline tests, but they are not advertised by an app endpoint or UI.
 
-Any future expiry and any three-digit CVC work. Saving validates the number (length and Luhn), expiry, CVC and name and returns `CARD_NUMBER_INVALID`, `CARD_EXPIRY_INVALID`, `CARD_EXPIRED`, `CARD_CVC_INVALID`, `CARD_NAME_INVALID` or `CARD_NOT_TEST_CARD` (400); `CARD_ALREADY_SAVED` and `CARD_LIMIT_REACHED` (5 cards) are 409. `payment_cards` keeps only the brand, last four digits, expiry, holder name, the test outcome and a fingerprint; the full number and CVC are discarded after validation.
+Validation returns field errors for an invalid number, expiry, CVC, or holder name. `CARD_LIMIT_REACHED` (409) means a card is already saved. A database advisory lock serializes saves and removals for each rider, including simultaneous first-card saves. Only masked metadata and a test fingerprint are stored; full card numbers and CVCs are discarded.
 
 `POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice: a success marks the trip `Paid` together with its confirmation and email receipt in one transaction, under the trip lock, so a double tap charges once (later calls return `alreadyPaid: true`). Declines return 402 with the codes above and leave the trip unpaid, so the rider can try another card. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
 
-Cash: `POST /payments/{tripId}/cash` (rider) sets `AwaitingCash`; the trip becomes `Paid` if the trip's driver calls `POST /payments/{tripId}/cash/confirm`. The rider app treats choosing cash as settled with the driver and does not wait for that confirmation. `GET /payments/{tripId}/status` is shared by the rider and the driver. `select-method` still accepts only Card.
+Cash: `POST /payments/{tripId}/cash` (rider) sets `AwaitingCash`; the trip becomes `Paid` if the trip's driver calls `POST /payments/{tripId}/cash/confirm`. The rider stays in `AwaitingCash` and polls until the driver confirms receipt. The driver can confirm cash in the completed-trip screen; Done and going offline remain blocked until payment is `Paid`. Cash does not request a card email receipt. `GET /payments/{tripId}/status` is shared by the rider and the driver. `select-method` still accepts only Card.
 
 Simulated rides (the app's demo drivers) never reach the trip service, so in Development with `DemoTrips__Enabled=true` the rider app may report one with `POST /payments/demo-completions` `{ "tripId": "trp_...", "finalFare": 640.00 }`. It only accepts simulated `trp_` IDs, is idempotent, and is 404 everywhere else. Real trips are completed only by the trip service through `/internal/trip-events`.
 
@@ -229,3 +221,14 @@ dotnet test GoRide.Payment.slnx --configuration Release --logger trx
 ```
 
 Story coverage: SCRUM-651–655 (card selection), SCRUM-656–663 (checkout, now on the PayHere sandbox), SCRUM-665–667 (SCRUM-103 dev: verification endpoint and business logic, validation and structured errors, parameterised ADO.NET data access) and SCRUM-674–675 (SCRUM-104 dev: confirmation endpoints and business logic, validation and structured errors). QA (SCRUM-668–671, 676–677) and CI/staging (SCRUM-672–673, 678) follow; pushing these branches does not perform a staging deployment.
+
+## Ride and payment contract
+
+- The trip service owns completion and the final fare. A browser cannot choose the amount for a real trip.
+- Payment owns settlement. Completing a ride, selecting a method, and paying are separate actions. Only a verified card success or the assigned driver's cash confirmation settles payment.
+- Card payment, its confirmation, and its receipt outbox row commit together. Repeated Pay requests return the existing confirmation under the trip lock.
+- The rider polls payment status while checkout is open. A refresh or lost Pay response reconciles with the server before showing the outcome. Choosing cash never fabricates a paid state.
+- The identity service supplies the receipt address from the registered account. Neither the payment form nor the resend endpoint accepts an alternate address.
+- Email delivery happens independently after successful payment. An email failure does not undo payment or charge the rider again; the receipt can be retried with cooldown and limits.
+
+The current trip-to-payment completion notifier still uses an in-memory queue with bounded retries. A durable trip outbox is needed before production so restarts or a long payment-service outage cannot lose completion notifications. The current card provider is deliberately test-only; a real card-on-file integration must use provider tokenization before accepting real cards.

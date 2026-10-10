@@ -34,8 +34,11 @@ public sealed class ReceiptService(PaymentStore payments, ReceiptStore receipts,
 
     public ReceiptView View(ReceiptRow row)
     {
+        // Older versions reported log-only deliveries as Sent. Correct them on read too.
+        var legacyLog = row.Status == ReceiptStatus.Sent && string.Equals(row.Provider, "Log", StringComparison.OrdinalIgnoreCase);
         var left = Math.Max(0, ReceiptRules.MaxResends - row.ResendCount);
-        return new(row.ReceiptId, row.Status, ReceiptRules.MaskEmail(row.Recipient), row.SentAt, row.Attempts,
+        return new(row.ReceiptId, legacyLog ? ReceiptStatus.Logged : row.Status,
+            ReceiptRules.MaskEmail(row.Recipient), legacyLog ? null : row.SentAt, row.Attempts,
             ResendBlocker(row, clock.GetUtcNow()) is null, ResendAvailableAt(row), left);
     }
 
@@ -44,7 +47,7 @@ public sealed class ReceiptService(PaymentStore payments, ReceiptStore receipts,
     {
         if (row.Status == ReceiptStatus.NoEmail || row.Recipient is null)
             return new(409, "RECEIPT_EMAIL_MISSING", "There was no email address on the account when this trip was paid.");
-        if (row.Status is not (ReceiptStatus.Sent or ReceiptStatus.Failed))
+        if (row.Status is not (ReceiptStatus.Sent or ReceiptStatus.Logged or ReceiptStatus.Failed))
             return new(409, "RECEIPT_IN_PROGRESS", "The receipt is already being sent.");
         if (row.ResendCount >= ReceiptRules.MaxResends)
             return new(429, "RECEIPT_RESEND_LIMIT", $"The receipt can be resent at most {ReceiptRules.MaxResends} times.");

@@ -21,10 +21,6 @@ public sealed class CardsController(CardService cards) : ControllerBase
         return Ok(new { cards = await cards.ListAsync(User.FindFirstValue("sub")!, ct) });
     }
 
-    // The published test numbers and what each one does, for the app's helper list.
-    [HttpGet("test-cards")]
-    public IActionResult TestCards() => Ok(new { cards = DemoCards.TestCards });
-
     [HttpPost]
     public async Task<IActionResult> Add(AddCardRequest request, CancellationToken ct)
     {
