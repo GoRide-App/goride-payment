@@ -217,6 +217,46 @@ input {
   background:transparent;
 }
 
+.optional {
+  font-weight:500;
+  color:#88958b;
+  margin-left:4px;
+}
+
+.text-input {
+  display:flex;
+  align-items:center;
+  border:1px solid #cdd8ce;
+  border-radius:8px;
+  padding:0 16px;
+  height:48px;
+}
+
+.text-input:focus-within {
+  border-color:#41815a;
+  outline:3px solid #37774915;
+}
+
+.text-input input {
+  font-size:15px;
+  font-weight:500;
+}
+
+.text-input input::placeholder {
+  color:#a3afa5;
+}
+
+.receipt-actions {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:18px;
+}
+
+a.button {
+  text-decoration:none;
+}
+
 .field-help {
   font-size:11px;
   color:#88958b;

@@ -3,16 +3,19 @@ using System.Text.Json.Serialization;
 using GoRide.Payment.Data;
 using GoRide.Payment.Checkout;
 using GoRide.Payment.Confirmation;
+using GoRide.Payment.Receipts;
 using GoRide.Payment.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace GoRide.Payment.Controllers;
 
 [ApiController]
 [Authorize]
 [Route("payments")]
-public sealed class PaymentsController(PaymentStore store, CheckoutService checkout, ConfirmationService confirmations) : ControllerBase
+public sealed class PaymentsController(PaymentStore store, CheckoutService checkout, ConfirmationService confirmations,
+    ReceiptService receipts) : ControllerBase
 {
     [HttpGet("{tripId}")]
     public async Task<IActionResult> Get(string tripId, CancellationToken ct)
@@ -56,7 +59,27 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
         Response.Headers.CacheControl = "no-store";
         return Ok(await confirmations.AcknowledgeAsync(tripId, User.FindFirstValue("sub")!, request.ConfirmationId, ct));
     }
+
+    // SCRUM-105: whether the email receipt was sent, without exposing the full address.
+    [HttpGet("{tripId}/receipt")]
+    public async Task<IActionResult> Receipt(string tripId, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Ok(await receipts.GetAsync(tripId, User.FindFirstValue("sub")!, ct));
+    }
+
+    [HttpPost("{tripId}/receipt/resend")]
+    public async Task<IActionResult> ResendReceipt(string tripId,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ResendReceiptRequest? request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        return Accepted(await receipts.ResendAsync(tripId, User.FindFirstValue("sub")!, ct));
+    }
 }
+
+// Resend takes no fields: the receipt always goes to the address captured at checkout.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ResendReceiptRequest;
 
 // Only the confirmation ID is accepted; the caller cannot set amounts, times or identity.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

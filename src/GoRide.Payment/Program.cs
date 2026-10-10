@@ -30,6 +30,18 @@ builder.Services.AddScoped<VerificationStore>();
 builder.Services.AddScoped<PaymentVerificationService>();
 builder.Services.AddScoped<ConfirmationStore>();
 builder.Services.AddScoped<ConfirmationService>();
+builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptStore>();
+builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptService>();
+// SCRUM-105: receipts are sent by Brevo when Email:Provider=Brevo, otherwise logged locally.
+builder.Services.AddSingleton<GoRide.Payment.Receipts.EmailSettings>();
+builder.Services.AddHttpClient("Brevo", client => client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+builder.Services.AddScoped<GoRide.Payment.Receipts.IEmailSender>(sp =>
+    sp.GetRequiredService<GoRide.Payment.Receipts.EmailSettings>().UseBrevo
+        ? ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.BrevoEmailSender>(sp)
+        : ActivatorUtilities.CreateInstance<GoRide.Payment.Receipts.LogEmailSender>(sp));
+builder.Services.AddSingleton<GoRide.Payment.Receipts.ReceiptDispatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GoRide.Payment.Receipts.ReceiptDispatcher>());
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)
@@ -52,16 +64,26 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     var (status, code, message) = error switch
     {
         PaymentException p => (p.Status, p.Code, p.Message),
+        // Minimal API binding failures (unknown fields, malformed JSON) in Development.
+        BadHttpRequestException b => (b.StatusCode, "INVALID_REQUEST", "The request is invalid."),
         MySqlException => (503, "PAYMENT_STORE_UNAVAILABLE", "The payment store is unavailable. Please try again."),
         _ => (500, "INTERNAL_ERROR", "The request could not be completed.")
     };
     context.Response.StatusCode = status;
-    await context.Response.WriteAsJsonAsync(new ProblemDetails
+    var problem = new ProblemDetails
     {
         Status = status,
         Title = message,
         Extensions = { ["code"] = code, ["traceId"] = context.TraceIdentifier }
-    });
+    };
+    if (error is PaymentException { RetryAfter: { } wait })
+    {
+        // Also in the body: browsers hide Retry-After from cross-origin scripts.
+        var seconds = Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds));
+        context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        problem.Extensions["retryAfterSeconds"] = seconds;
+    }
+    await context.Response.WriteAsJsonAsync(problem);
 }));
 app.UseCors();
 app.UseAuthentication();
@@ -76,7 +98,8 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
         SELECT 1 FROM payments
         LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id
         LEFT JOIN payment_verifications ON payments.trip_id = payment_verifications.trip_id
-        LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id LIMIT 1
+        LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id
+        LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id LIMIT 1
         """, connection);
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });

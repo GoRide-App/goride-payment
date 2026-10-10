@@ -5,7 +5,7 @@ using GoRide.Payment.Verification;
 namespace GoRide.Payment.Checkout;
 
 public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkouts, VerificationStore verifications,
-    PayHereSettings settings, TimeProvider clock)
+    Receipts.ReceiptStore receipts, PayHereSettings settings, TimeProvider clock)
 {
     public async Task<CheckoutForm> CreateAsync(string tripId, string riderId, RiderContact contact, CancellationToken ct)
     {
@@ -38,6 +38,9 @@ public sealed class CheckoutService(PaymentStore payments, CheckoutStore checkou
                 urls.Return, urls.Cancel, clock.GetUtcNow());
             await checkouts.InsertAsync(attempt, ct);
         }
+        // SCRUM-105: remember the verified email for the receipt sent once the payment is verified.
+        if (contact.EmailVerified)
+            await receipts.SaveContactAsync(tripId, riderId, contact.Email, contact.ReceiptName, clock.GetUtcNow(), ct);
         return Form(attempt, urls.Notify, contact);
     }
 

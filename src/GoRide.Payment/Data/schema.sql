@@ -1,3 +1,6 @@
+-- Apply to the selected database with a schema administrator before deployment.
+-- Safe to re-run: tables and their inline indexes are created only when absent;
+-- upgrades of existing columns are guarded against their known previous definition.
 CREATE TABLE IF NOT EXISTS payments (
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
     document JSON NOT NULL
@@ -56,6 +59,52 @@ CREATE TABLE IF NOT EXISTS payment_confirmations (
     paid_at DATETIME(6) NOT NULL,
     acknowledged_at DATETIME(6) NULL,
     INDEX ix_confirmation_rider (rider_id, paid_at),
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
+-- Early SCRUM-104 databases used CHAR(36), which MySqlConnector reads as Guid.
+-- Widen the storage representation without changing IDs, rows or existing indexes.
+SET @payment_schema_sql = IF(EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'payment_confirmations'
+      AND column_name = 'confirmation_id' AND data_type = 'char'
+      AND character_maximum_length = 36 AND character_set_name = 'ascii'
+      AND collation_name = 'ascii_bin' AND is_nullable = 'NO'
+), 'ALTER TABLE payment_confirmations MODIFY COLUMN confirmation_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL', 'SELECT 1');
+PREPARE payment_schema_statement FROM @payment_schema_sql;
+EXECUTE payment_schema_statement;
+DEALLOCATE PREPARE payment_schema_statement;
+
+-- SCRUM-105: the rider's email, taken from the verified identity session at checkout.
+CREATE TABLE IF NOT EXISTS payment_contacts (
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
+    rider_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    email VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+    display_name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    captured_at DATETIME(6) NOT NULL,
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
+-- SCRUM-105: email receipt outbox. One row per paid trip, written in the transaction
+-- that marks it paid; a background sender delivers it and records the outcome.
+CREATE TABLE IF NOT EXISTS payment_receipts (
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
+    receipt_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+    recipient VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    recipient_name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    resend_count INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(6) NOT NULL,
+    lease_token VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    lease_until DATETIME(6) NULL,
+    provider VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    provider_message_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    last_error VARCHAR(300) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+    created_at DATETIME(6) NOT NULL,
+    sent_at DATETIME(6) NULL,
+    last_requested_at DATETIME(6) NULL,
+    INDEX ix_receipt_due (status, next_attempt_at),
     FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
 ) ENGINE=InnoDB;
 
