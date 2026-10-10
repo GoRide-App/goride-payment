@@ -47,7 +47,7 @@ public sealed class PaymentApiTests
         await using var app = new PaymentApplication(db.ConnectionString);
         using var client = app.CreateClient();
         foreach (var table in new[] { "payments", "payment_checkouts", "payment_verifications", "payment_confirmations",
-            "payment_contacts", "payment_receipts", "processed_payment_events", "payment_cards" })
+            "payment_contacts", "payment_receipts", "processed_payment_events", "payment_cards", "driver_payment_notifications" })
         {
             await db.ExecuteAsync($"RENAME TABLE {table} TO temporarily_unavailable");
             await AssertError(await client.GetAsync("/health"), 503, "PAYMENT_STORE_UNAVAILABLE");
@@ -293,6 +293,10 @@ internal sealed class PaymentApplication(string connectionString,
             // Tests drive receipt delivery explicitly; no background sender, and never real email
             // even if local Development settings configure Brevo.
             ["Receipts:DispatcherEnabled"] = "false",
+            ["Notification:DispatcherEnabled"] = "false",
+            ["Notification:BaseUrl"] = "",
+            // TestHost must not require permission to write the Windows system event log.
+            ["Logging:EventLog:LogLevel:Default"] = "None",
             ["Email:Provider"] = "Log",
             // Demo card charges skip the simulated network delay.
             ["DemoCard:ProcessingMilliseconds"] = "0"
@@ -393,7 +397,7 @@ internal sealed class TestDatabase : IAsyncDisposable
     public async Task<long> Count(string table)
     {
         if (table is not ("payments" or "processed_payment_events" or "payment_checkouts" or "payment_verifications"
-            or "payment_confirmations" or "payment_contacts" or "payment_receipts" or "payment_cards"))
+            or "payment_confirmations" or "payment_contacts" or "payment_receipts" or "payment_cards" or "driver_payment_notifications"))
             throw new ArgumentException("Unknown table.");
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.OpenAsync();
