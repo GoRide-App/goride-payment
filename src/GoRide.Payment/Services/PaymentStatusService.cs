@@ -1,4 +1,5 @@
 using GoRide.Payment.Checkout;
+using GoRide.Payment.Cards;
 using GoRide.Payment.Confirmation;
 using GoRide.Payment.Data;
 using GoRide.Payment.Models;
@@ -8,10 +9,11 @@ namespace GoRide.Payment.Services;
 // What both the rider and the driver see about a trip's payment.
 // This status never requires the driver to wait for payment.
 public sealed record PaymentStatusView(string TripId, string Status, string? Method, decimal Amount, string Currency,
-    DateTimeOffset? PaidAt, string? CardBrand, string? CardLast4);
+    DateTimeOffset? PaidAt, string? CardBrand, string? CardLast4, int AttemptCount, string? LastFailureCode,
+    string? RequestId, string? RequestState, int RequestAttempts, bool AutoRetried, bool Retryable);
 
 public sealed class PaymentStatusService(PaymentStore payments, ConfirmationStore confirmations,
-    TripCompletionService completions, TimeProvider clock)
+    TripCompletionService completions, TimeProvider clock, CardAttemptStore attempts)
 {
     // Null while the completed trip has not reached the payment service yet.
     public async Task<PaymentStatusView?> GetAsync(string tripId, string userId, CancellationToken ct)
@@ -62,7 +64,9 @@ public sealed class PaymentStatusService(PaymentStore payments, ConfirmationStor
     {
         var paid = payment.Status is "Paid" or "Charged";
         var confirmation = paid && payment.Method == "Card" ? await confirmations.GetAsync(payment.TripId, ct) : null;
+        var history = await attempts.StatusAsync(payment.TripId, ct);
         return new(payment.TripId, paid ? "Paid" : payment.Status, payment.Method, payment.FinalFare, PayHereSettings.Currency,
-            paid ? payment.ProcessedAt : null, confirmation?.CardBrand, confirmation?.CardLast4);
+            paid ? payment.ProcessedAt : null, confirmation?.CardBrand, confirmation?.CardLast4, history.AttemptCount,
+            history.LastFailureCode, history.RequestId, history.RequestState, history.RequestAttempts, history.AutoRetried, history.Retryable);
     }
 }

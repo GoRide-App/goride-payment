@@ -141,6 +141,35 @@ CREATE TABLE IF NOT EXISTS processed_payment_events (
     INDEX ix_payment_events_trip (trip_id)
 ) ENGINE=InnoDB;
 
+-- SCRUM-107: durable logical pay requests and their individual charge attempts.
+CREATE TABLE IF NOT EXISTS payment_card_requests (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    request_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    document JSON NOT NULL,
+    UNIQUE KEY ux_card_request (trip_id, request_id),
+    INDEX ix_card_request_trip (trip_id, id),
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS payment_card_attempts (
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    request_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    attempt_number INT NOT NULL,
+    request_attempt TINYINT NOT NULL,
+    outcome VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    failure_code VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    amount_minor BIGINT NOT NULL,
+    currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    started_at DATETIME(6) NOT NULL,
+    completed_at DATETIME(6) NULL,
+    automatic BOOLEAN NOT NULL,
+    PRIMARY KEY (trip_id, attempt_number),
+    UNIQUE KEY ux_card_attempt_request (trip_id, request_id, request_attempt),
+    FOREIGN KEY (trip_id, request_id) REFERENCES payment_card_requests(trip_id, request_id),
+    CHECK (request_attempt IN (1, 2))
+) ENGINE=InnoDB;
+
 -- Demo cards a rider saved for in-app payment. Only published test card numbers are
 -- accepted; the full number and CVC are never stored, only brand, last four and expiry.
 CREATE TABLE IF NOT EXISTS payment_cards (

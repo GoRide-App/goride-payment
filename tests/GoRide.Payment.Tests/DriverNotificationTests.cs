@@ -114,8 +114,11 @@ public sealed class DriverNotificationApiTests
             new { number = "4242424242424242", expMonth = 12, expYear = 2030, cvc = "123", holderName = "Rider One" });
         cardResponse.EnsureSuccessStatusCode();
         var cardId = (await cardResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("cardId").GetString();
-        var responses = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId })));
+        var requestId = Guid.NewGuid().ToString();
+        var responses = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId, requestId })));
         foreach (var response in responses) { response.EnsureSuccessStatusCode(); response.Dispose(); }
+        Assert.Equal(1L, await db.Count("payment_card_requests"));
+        Assert.Equal(1L, await db.Count("payment_card_attempts"));
         Assert.Equal(1L, await db.Count("driver_payment_notifications"));
         using var driver = app.CreateClient();
         driver.DefaultRequestHeaders.Add("Cookie", "session=driver-1");

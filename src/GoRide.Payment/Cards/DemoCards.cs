@@ -13,6 +13,9 @@ public static class CardBehaviour
     public const string ExpiredCard = "ExpiredCard";
     public const string IncorrectCvc = "IncorrectCvc";
     public const string ProcessingError = "ProcessingError";
+    public const string ProcessingOnce = "ProcessingOnce";
+    public const string ProviderTimeout = "ProviderTimeout";
+    public const string ProviderUnavailable = "ProviderUnavailable";
 }
 
 public sealed record DemoTestCard(string Number, string Brand, string Behaviour, string Description);
@@ -37,7 +40,10 @@ public static class DemoCards
         new("4000000000009995", "Visa", CardBehaviour.InsufficientFunds, "Declined for insufficient funds"),
         new("4000000000000069", "Visa", CardBehaviour.ExpiredCard, "Declined as expired"),
         new("4000000000000127", "Visa", CardBehaviour.IncorrectCvc, "Declined for an incorrect CVC"),
-        new("4000000000000119", "Visa", CardBehaviour.ProcessingError, "Processing error, retry succeeds with another card")
+        new("4000000000000119", "Visa", CardBehaviour.ProcessingError, "Processing error on both attempts"),
+        new("4000000000000341", "Visa", CardBehaviour.ProcessingOnce, "GoRide demo: processing error, automatic retry succeeds"),
+        new("4000000000000077", "Visa", CardBehaviour.ProviderTimeout, "GoRide demo: provider timeout on both attempts"),
+        new("4000000000000085", "Visa", CardBehaviour.ProviderUnavailable, "GoRide demo: provider 503 on both attempts")
     ];
 
     public static ValidatedCard Validate(string? number, int? expMonth, int? expYear, string? cvc, string? holderName, DateTimeOffset now)
@@ -85,9 +91,13 @@ public static class DemoCards
     }
 
     // The decline a charge returns, or null when the charge succeeds. 402 like Stripe.
-    public static PaymentException? Decline(string behaviour) => behaviour switch
+    public static PaymentException? Decline(string behaviour, int attempt = 1) => behaviour switch
     {
         CardBehaviour.Succeeds => null,
+        CardBehaviour.ProcessingOnce when attempt > 1 => null,
+        CardBehaviour.ProcessingOnce => new(402, "PROCESSING_ERROR", "Your card could not be processed."),
+        CardBehaviour.ProviderTimeout => new(402, "PROVIDER_TIMEOUT", "The card provider timed out."),
+        CardBehaviour.ProviderUnavailable => new(402, "PROVIDER_UNAVAILABLE", "The card provider is temporarily unavailable."),
         CardBehaviour.InsufficientFunds => new(402, "INSUFFICIENT_FUNDS", "Your card has insufficient funds. Try another card."),
         CardBehaviour.ExpiredCard => new(402, "EXPIRED_CARD", "Your card has expired. Try another card."),
         CardBehaviour.IncorrectCvc => new(402, "INCORRECT_CVC", "Your card's security code is incorrect. Check it or try another card."),

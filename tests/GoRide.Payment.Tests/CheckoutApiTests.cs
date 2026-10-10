@@ -138,7 +138,7 @@ public sealed class CheckoutApiTests
             await db.ExecuteAsync("UPDATE payments SET document = JSON_SET(document, '$.status', @status)", ("@status", status));
             await Error(await client.PostAsJsonAsync($"/payments/{evt.TripId}/checkout", new { }), 409, "PAYMENT_SETTLED");
         }
-        await db.ExecuteAsync("UPDATE payments SET document = JSON_SET(document, '$.status', 'Pending', '$.cardAttemptCount', '2')");
+        await db.ExecuteAsync("UPDATE payments SET document = JSON_SET(document, '$.status', 'Pending', '$.cardDisabled', CAST('true' AS JSON))");
         await Error(await client.PostAsJsonAsync($"/payments/{evt.TripId}/checkout", new { }), 409, "CARD_DISABLED");
         var free = PaymentRulesTests.Completion() with { Payload = new() { FinalFare = 0 } };
         await Seed(client, free);

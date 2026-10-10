@@ -51,7 +51,7 @@ public sealed class PaymentRulesTests
 
     [Theory]
     [InlineData(true, 0)]
-    [InlineData(false, 2)]
+    [InlineData(true, 2)]
     public void DisabledCardIsRejected(bool disabled, int attempts)
     {
         var payment = PaymentRules.ApplyCompletion(null, Completion()) with { CardDisabled = disabled, CardAttemptCount = attempts };

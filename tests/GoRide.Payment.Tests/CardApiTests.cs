@@ -33,7 +33,7 @@ public sealed class CardApiTests
         (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
         for (var i = 0; i < 2; i++)
-            (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card })).EnsureSuccessStatusCode();
+            (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card })).EnsureSuccessStatusCode();
         var dispatcher = app.Services.GetRequiredService<ReceiptDispatcher>();
         Assert.True(await dispatcher.SendNextAsync(default));
         Assert.False(await dispatcher.SendNextAsync(default));
@@ -172,7 +172,7 @@ public sealed class CardApiTests
         (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
 
-        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card })));
+        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card })));
         foreach (var response in results) Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var bodies = await Task.WhenAll(results.Select(r => r.Content.ReadFromJsonAsync<JsonElement>()));
         Assert.Single(bodies, b => !b.GetProperty("alreadyPaid").GetBoolean());
@@ -219,16 +219,16 @@ public sealed class CardApiTests
         })
         {
             var card = (await AddCard(rider, number)).GetProperty("cardId").GetString();
-            await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card }), 402, code);
+            await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card }), 402, code);
             await rider.DeleteAsync($"/payments/cards/{card}");
         }
         Assert.Equal("Pending", (await rider.GetFromJsonAsync<PaymentRecord>($"/payments/{evt.TripId}"))!.Status);
         Assert.Equal(0L, await db.Count("payment_confirmations"));
         Assert.Equal(0L, await db.Count("payment_receipts"));
-        Assert.Equal(5L, await Scalar(db, "SELECT COUNT(*) FROM payment_verifications WHERE outcome = 'Failed'"));
+        Assert.Equal(6L, await Scalar(db, "SELECT COUNT(*) FROM payment_verifications WHERE outcome = 'Failed'"));
 
         var good = (await AddCard(rider, "5555555555554444")).GetProperty("cardId").GetString();
-        using var paid = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = good });
+        using var paid = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = good });
         Assert.Equal(HttpStatusCode.OK, paid.StatusCode);
         Assert.Equal("MASTERCARD", (await paid.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("confirmation").GetProperty("cardBrand").GetString());
     }
@@ -243,12 +243,12 @@ public sealed class CardApiTests
         var evt = PaymentRulesTests.Completion();
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
         var othersCard = (await AddCard(other, "4242424242424242")).GetProperty("cardId").GetString();
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card }), 409, "TRIP_NOT_COMPLETED");
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card }), 409, "TRIP_NOT_COMPLETED");
         (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
-        await CheckoutApiTests.Error(await other.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = othersCard }), 403, "PAYMENT_FORBIDDEN");
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = othersCard }), 404, "CARD_NOT_FOUND");
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = "nope" }), 404, "CARD_NOT_FOUND");
-        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card, amount = 1 }), 400, "INVALID_REQUEST");
+        await CheckoutApiTests.Error(await other.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = othersCard }), 403, "PAYMENT_FORBIDDEN");
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = othersCard }), 404, "CARD_NOT_FOUND");
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = "nope" }), 404, "CARD_NOT_FOUND");
+        await CheckoutApiTests.Error(await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card, amount = 1 }), 400, "INVALID_REQUEST");
         await CheckoutApiTests.Error(await other.GetAsync($"/payments/{evt.TripId}/status"), 403, "PAYMENT_FORBIDDEN");
         Assert.Equal(0L, await db.Count("payment_confirmations"));
         Assert.Equal("null", await (await rider.GetAsync($"/payments/{Guid.NewGuid()}/status")).Content.ReadAsStringAsync());
@@ -270,8 +270,8 @@ public sealed class CardApiTests
         Assert.Equal(JsonValueKind.Null, waiting.GetProperty("paidAt").ValueKind);
         Assert.Equal(await rider.GetStringAsync($"/payments/{evt.TripId}/status"), await driver.GetStringAsync($"/payments/{evt.TripId}/status"));
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
-        await CheckoutApiTests.Error(await driver.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card }), 403, "PAYMENT_FORBIDDEN");
-        (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId = card })).EnsureSuccessStatusCode();
+        await CheckoutApiTests.Error(await driver.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card }), 403, "PAYMENT_FORBIDDEN");
+        (await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card })).EnsureSuccessStatusCode();
 
         var paid = await driver.GetFromJsonAsync<JsonElement>($"/payments/{evt.TripId}/status");
         Assert.Equal("Paid", paid.GetProperty("status").GetString());
@@ -296,7 +296,7 @@ public sealed class CardApiTests
         {
             (await CheckoutApiTests.PostEvent(rider, evt)).EnsureSuccessStatusCode();
             cardId = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
-            using var response = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId });
+            using var response = await rider.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId });
             response.EnsureSuccessStatusCode();
             var first = await response.Content.ReadFromJsonAsync<JsonElement>();
             Assert.False(first.GetProperty("alreadyPaid").GetBoolean());
@@ -305,7 +305,7 @@ public sealed class CardApiTests
         }
         await using var restarted = new PaymentApplication(db.ConnectionString);
         using var retry = Client(restarted, "rider-1-email");
-        using var retried = await retry.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { cardId });
+        using var retried = await retry.PostAsJsonAsync($"/payments/{evt.TripId}/pay", new { requestId = Guid.NewGuid().ToString(), cardId });
         retried.EnsureSuccessStatusCode();
         var result = await retried.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("Paid", result.GetProperty("status").GetString());
@@ -337,7 +337,7 @@ public sealed class CardApiTests
         using (var other = Client(app, "other"))
             await CheckoutApiTests.Error(await other.PostAsJsonAsync("/payments/demo-completions", new { tripId = trip, finalFare = 640m }), 403, "PAYMENT_FORBIDDEN");
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
-        using var paid = await rider.PostAsJsonAsync($"/payments/{trip}/pay", new { cardId = card });
+        using var paid = await rider.PostAsJsonAsync($"/payments/{trip}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card });
         Assert.Equal(640m, (await paid.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("confirmation").GetProperty("amount").GetDecimal());
     }
 
