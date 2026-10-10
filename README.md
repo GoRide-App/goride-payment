@@ -1,14 +1,14 @@
 # GoRide Payment
 
-SCRUM-101–105: a rider can select card payment after their trip completes, pay through the **PayHere sandbox** checkout, the trip is marked paid only after PayHere's server notice is verified, the rider app then shows a one-time in-app confirmation, and the rider gets an email receipt (sent with Brevo's free plan). The service uses .NET 10, MySQL 8 and direct ADO.NET queries. Checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
+SCRUM-101–105: a rider can manually save one test card and pay in-app after their trip completes, or use the **PayHere sandbox** checkout. Successful card payment commits the paid state, an in-app confirmation and an email receipt outbox entry together. Brevo sends receipts; local Log previews report `Logged`, never `Sent`. This SCRUM-101 follow-up covers saved cards and in-app card payment. Cash choice stays local to the frontend, and the driver never waits for payment. The service uses .NET 10, MySQL 8 and direct ADO.NET queries. PayHere checkout is fixed to `https://sandbox.payhere.lk`, so no live merchant key is needed or accepted.
 
 ## Run locally
 
-1. Create a `payment_db` MySQL database and a service user with SELECT, INSERT and UPDATE access to its tables.
-2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. Run it again when upgrading from SCRUM-101: it adds new tables (`payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`) without modifying existing ones. The application never creates or changes production schemas automatically.
+1. Create a `payment_db` MySQL database and a service user with SELECT, INSERT and UPDATE access to its tables, plus DELETE on `payment_cards` for saved-card removal.
+2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. It is the single schema source for fresh databases and upgrades: missing tables and their indexes are created, and the early SCRUM-104 `confirmation_id CHAR(36)` column is guardedly converted to `VARCHAR(36)` without changing IDs or removing data. Reapplying it preserves existing rows. It does not repair arbitrary schema drift. The application never creates or changes production schemas automatically.
 3. Set `ConnectionStrings__Payments`, `Identity__BaseUrl`, and `InternalServices__ApiKey` in the environment. `.env.example` lists the settings; `.env` is not loaded automatically. Alternatively use a gitignored `src/GoRide.Payment/appsettings.Development.json`.
 4. Run `dotnet run --project src/GoRide.Payment --urls http://localhost:8083`.
-5. `GET /health` checks the database and the payments, checkout, verification, confirmation and receipt tables.
+5. `GET /health` checks the database and all eight application tables: `payments`, `payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`, `processed_payment_events` and `payment_cards`.
 
 Use TLS for database and identity connections outside local development. No credentials are committed. A Docker image can be built with `docker build -t goride-payment .` and run on container port 8080 with these environment variables.
 
@@ -24,16 +24,22 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/{tripId}/confirmation/acknowledge` | Accepts exactly `{ "confirmationId": "..." }`; records that the app showed it |
 | GET | `/payments/{tripId}/receipt` | Whether the email receipt was sent (address masked) and whether it can be resent |
 | POST | `/payments/{tripId}/receipt/resend` | Accepts `{}` or no body; queues the receipt again (202) |
-| GET/POST | `/payments/cards` | List or manually save the rider's single test card (test numbers only; only brand, last four and expiry are kept) |
-| DELETE, POST | `/payments/cards/{cardId}`, `/payments/cards/{cardId}/default` | Remove a card, or make it the default |
+| GET | `/payments/cards` | Rider: `{ "cards": [...] }`, empty or one saved test card |
+| POST | `/payments/cards` | Rider: `{ "number": "...", "expMonth": 12, "expYear": 2030, "cvc": "...", "holderName": "...", "makeDefault": true }`; last two fields optional; returns the saved card (201), or `CARD_LIMIT_REACHED` (409) |
+| DELETE | `/payments/cards/{cardId}` | Rider: no body; removes their card (204) |
+| POST | `/payments/cards/{cardId}/default` | Rider: `{}` or no body; returns their saved card with `isDefault: true` |
 | POST | `/payments/{tripId}/pay` | Accepts exactly `{ "cardId": "..." }`; charges the saved demo card in-app |
 | GET | `/payments/{tripId}/status` | Payment status for the trip's rider and driver, or JSON `null` before completion arrives |
-| POST | `/payments/{tripId}/cash`, `/payments/{tripId}/cash/confirm` | Rider chooses cash; the driver confirms receiving it |
+| POST | `/payments/demo-completions` | Rider, Development with `DemoTrips__Enabled=true` only: `{ "tripId": "trp_...", "finalFare": 640.00 }`; returns the payment record |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
+
+All public payment operations require the rider's identity session and ownership, except `/status`, which also permits the assigned driver. PayHere notify instead verifies the provider signature; internal ingestion requires the internal service key. `GET /health` is anonymous and returns `{ "status": "healthy", "database": "connected" }`.
+
+Saved-card responses contain `cardId`, `brand`, `last4`, `expMonth`, `expYear`, `holderName`, `isDefault` and `createdAt`. `/pay` returns `status: "Paid"`, `alreadyPaid` and `confirmation` (fields shown below); a successful retry returns the original confirmation. `/status` returns `tripId`, `status`, `method`, `amount`, `currency`, `paidAt`, `cardBrand` and `cardLast4`. Card numbers, CVCs, test behavior and fingerprints are never returned. There is no card catalogue endpoint, cash-selection endpoint or cash-confirmation endpoint in this branch.
 
 The get/select paths match the frontend's existing `payments.get` and `payments.selectMethod` contract. The checkout endpoint returns JSON (`orderId`, `actionUrl`, `fields`, `amount`, `currency`); the client builds a hidden form from `fields` and POSTs it to `actionUrl`. Route these paths through the same frontend origin so its identity session cookie reaches the service. The payment service verifies the cookie against identity-auth's `/api/me`; it never accepts a browser-supplied rider ID. Its HTTP client does not store cookies or follow redirects. Configure `Identity__BaseUrl` to the actual identity service. Direct cross-origin clients additionally require an allowed CORS origin and credentials.
 
-The trip/fare producer must publish completion with the authoritative final fare. Existing frontend mock payments are not authoritative input. No browser can register a completion event or set an amount. Integration with the running trip producer/gateway and deployment are separate from this repository's service implementation.
+The trip/fare producer must publish completion with the authoritative final fare. Existing frontend mock payments are not authoritative input. For real trips, no browser can register a completion event or set an amount; the Development-only simulated-ride endpoint is described below. Integration with the running trip producer/gateway and deployment are separate from this repository's service implementation.
 
 Example trusted completion body (send with the configured internal service key):
 
@@ -177,7 +183,7 @@ By default `Email__Provider=Brevo`: receipt emails require a configured key and 
 3. Under **SMTP & API → API Keys**, create an API key.
 4. Set `Email__Provider=Brevo`, `Email__FromAddress` (the verified sender), optionally `Email__FromName`, and `Email__Brevo__ApiKey`, in the environment or the gitignored `appsettings.Development.json`. Never commit the key.
 
-Receipts are sent through Brevo's transactional API (`POST https://api.brevo.com/v3/smtp/email`) with an HTML body and a plain-text alternative. Brevo 4xx responses other than 429 are treated as permanent failures; 429, 5xx, timeouts and network errors are retried. `Receipts__DispatcherEnabled` (default `true`) and `Receipts__PollSeconds` (default 5) control the background sender.
+Receipts are sent through Brevo's transactional API (`POST https://api.brevo.com/v3/smtp/email`) with an HTML body and a plain-text alternative. Brevo 4xx responses other than 401, 403 and 429 are treated as permanent failures; 401/403 (key or IP authorization), 429, 5xx, timeouts and network errors are retried. `Receipts__DispatcherEnabled` (default `true`) and `Receipts__PollSeconds` (default 5) control the background sender.
 
 The development page has an optional **Receipt email** field on the test ride. After **Simulate successful payment** it shows the receipt status, a **Preview email** link with the exact email, and **Resend**.
 
@@ -189,9 +195,9 @@ For a successful test payment, manually enter `4242 4242 4242 4242`, any future 
 
 Validation returns field errors for an invalid number, expiry, CVC, or holder name. `CARD_LIMIT_REACHED` (409) means a card is already saved. A database advisory lock serializes saves and removals for each rider, including simultaneous first-card saves. Only masked metadata and a test fingerprint are stored; full card numbers and CVCs are discarded.
 
-`POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice: a success marks the trip `Paid` together with its confirmation and email receipt in one transaction, under the trip lock, so a double tap charges once (later calls return `alreadyPaid: true`). Declines return 402 with the codes above and leave the trip unpaid, so the rider can try another card. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
+`POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice: a success marks the trip `Paid` together with its confirmation and email receipt in one transaction, under the trip lock, so a double tap charges once. Retrying the same request returns the original confirmation with `alreadyPaid: true`, including after a restart or subsequent saved-card deletion. Declines return 402 with `CARD_DECLINED`, `INSUFFICIENT_FUNDS`, `EXPIRED_CARD`, `INCORRECT_CVC` or `PROCESSING_ERROR` and leave the trip unpaid, so the rider can remove that card and save another. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
 
-Cash: `POST /payments/{tripId}/cash` (rider) sets `AwaitingCash`; the trip becomes `Paid` if the trip's driver calls `POST /payments/{tripId}/cash/confirm`. The rider stays in `AwaitingCash` and polls until the driver confirms receipt. The driver can confirm cash in the completed-trip screen; Done and going offline remain blocked until payment is `Paid`. Cash does not request a card email receipt. `GET /payments/{tripId}/status` is shared by the rider and the driver. `select-method` still accepts only Card.
+Cash choice is local to the frontend and makes no payment-service request. This SCRUM-101 branch provides saved cards and in-app card payment; cash selection and driver confirmation belong to SCRUM-109, SCRUM-112 and SCRUM-113. The driver never waits for payment. `GET /payments/{tripId}/status` is shared by the rider and the driver; `select-method` accepts only Card.
 
 Simulated rides (the app's demo drivers) never reach the trip service, so in Development with `DemoTrips__Enabled=true` the rider app may report one with `POST /payments/demo-completions` `{ "tripId": "trp_...", "finalFare": 640.00 }`. It only accepts simulated `trp_` IDs, is idempotent, and is 404 everywhere else. Real trips are completed only by the trip service through `/internal/trip-events`.
 
@@ -206,29 +212,158 @@ Offsets are committed only after database commit. Temporary failures retry at th
 ```sh
 dotnet restore GoRide.Payment.slnx
 dotnet build GoRide.Payment.slnx --configuration Release --no-restore
+dotnet format GoRide.Payment.slnx --verify-no-changes --no-restore
 dotnet test GoRide.Payment.slnx --configuration Release --no-build
 ```
 
 Tests cover authorization, validation, exact amounts, concurrent checkout, order reuse across restarts, fare corrections, unsafe configuration, settlement guards, PayHere signature formulas, development-page isolation and receipts (one per paid trip under redelivery, retry backoff, lease recovery, resend limits, email validation and rendering). HTTP tests exercise the real application and MySQL data access with a deterministic identity stub. They do not need real PayHere credentials. Dedicated verification tests (SCRUM-668–671) belong to QA.
 
-Set `PAYMENT_TEST_MYSQL` to a **disposable local/CI MySQL administrator connection** before running the HTTP/database tests. Each test creates and removes its own randomly named `payment_test_...` database; it does not use `payment_db`. If this variable is absent, database tests are explicitly skipped. The GitHub Actions workflow always supplies a fresh MySQL service and runs build, all tests, artifact upload and Docker build on every branch push and PR.
+Set `PAYMENT_TEST_MYSQL` to a **disposable local/CI MySQL administrator connection** before running the HTTP/database tests. Each test creates and removes its own randomly named `payment_test_...` database; it does not use `payment_db`. If this variable is absent, database tests are explicitly skipped. Tests also cover schema upgrades/reapplication with a paid trip and recovery of `/health` after applying the schema.
+
+Both solution files include the application and tests; always name the solution to avoid MSB1011. CI uses `GoRide.Payment.slnx` on .NET 10, supplies MySQL 8.0 at port 3306 through `PAYMENT_TEST_MYSQL`, and runs on PRs into `dev`/`main`, pushes to those branches, and manual dispatch. It restores, builds Release, runs tests, uploads results, checks formatting, audits vulnerable/deprecated dependencies and builds the Docker image. Formatting and deprecated dependencies are advisory; vulnerable dependencies, build/tests and Docker are blocking through `CI / CI Gate`. Compiler warnings are reported, not treated as errors.
 
 Example PowerShell for a disposable server:
 
 ```powershell
-$env:PAYMENT_TEST_MYSQL = 'Server=127.0.0.1;Port=3306;User ID=root;Password=local-test-password;SslMode=Disabled'
+$env:PAYMENT_TEST_MYSQL = 'Server=127.0.0.1;Port=33307;User ID=root;SslMode=Disabled'
 dotnet test GoRide.Payment.slnx --configuration Release --logger trx
 ```
-
-Story coverage: SCRUM-651–655 (card selection), SCRUM-656–663 (checkout, now on the PayHere sandbox), SCRUM-665–667 (SCRUM-103 dev: verification endpoint and business logic, validation and structured errors, parameterised ADO.NET data access) and SCRUM-674–675 (SCRUM-104 dev: confirmation endpoints and business logic, validation and structured errors). QA (SCRUM-668–671, 676–677) and CI/staging (SCRUM-672–673, 678) follow; pushing these branches does not perform a staging deployment.
 
 ## Ride and payment contract
 
 - The trip service owns completion and the final fare. A browser cannot choose the amount for a real trip.
-- Payment owns settlement. Completing a ride, selecting a method, and paying are separate actions. Only a verified card success or the assigned driver's cash confirmation settles payment.
+- Payment owns card settlement. Completing a ride, selecting Card, and paying are separate actions. Only a verified card success settles card payment. The driver never waits for payment.
 - Card payment, its confirmation, and its receipt outbox row commit together. Repeated Pay requests return the existing confirmation under the trip lock.
-- The rider polls payment status while checkout is open. A refresh or lost Pay response reconciles with the server before showing the outcome. Choosing cash never fabricates a paid state.
+- The rider polls payment status while card checkout is open. A refresh or lost Pay response reconciles with the server before showing the outcome. Cash choice stays local to the frontend.
 - The identity service supplies the receipt address from the registered account. Neither the payment form nor the resend endpoint accepts an alternate address.
 - Email delivery happens independently after successful payment. An email failure does not undo payment or charge the rider again; the receipt can be retried with cooldown and limits.
 
 The current trip-to-payment completion notifier still uses an in-memory queue with bounded retries. A durable trip outbox is needed before production so restarts or a long payment-service outage cannot lose completion notifications. The current card provider is deliberately test-only; a real card-on-file integration must use provider tokenization before accepting real cards.
+On a restricted Windows account, Event Log writes may fail during HTTP tests; set `$env:Logging__EventLog__LogLevel__Default = 'None'` for that test process. If MSBuild worker pipes are denied, add `-m:1 -p:UseSharedCompilation=false` to build and `-m:1` to restore/test. These local restrictions do not require changes to the Ubuntu CI workflow. The full solution format check also needs access to its build-host pipe; a folder whitespace check alone is not equivalent.
+
+Story coverage: SCRUM-651–655 (card selection), SCRUM-656–663 (checkout, now on the PayHere sandbox), SCRUM-665–667 (SCRUM-103 dev: verification endpoint and business logic, validation and structured errors, parameterised ADO.NET data access) and SCRUM-674–675 (SCRUM-104 dev: confirmation endpoints and business logic, validation and structured errors). QA (SCRUM-668–671, 676–677) and CI/staging (SCRUM-672–673, 678) follow. Feature-branch pushes do not deploy; pushes to `dev` deploy when `CD_ENABLED=true`.
+
+## Azure deployment
+
+`cd.yml` runs the reusable CI, builds the root Dockerfile, pushes `ghcr.io/goride-app/goride-payment:<commit SHA>` and `:dev`, then updates the Container App to the immutable SHA tag. The runtime image uses .NET 10, a non-root user and port 8080. CD never applies SQL, configures ingress, sets runtime environment variables, or creates/updates Container App secrets. It preserves the existing configuration. It checks that Brevo, a sender address, an API-key secret reference and receipt dispatch are configured before swapping the image. Provision those settings once using the steps below; no new GitHub application secrets are needed.
+
+GitHub repository variables: `CD_ENABLED=true`, `AZURE_RESOURCE_GROUP`, `AZURE_CONTAINERAPP_NAME=goride-payment`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. `GITHUB_TOKEN` is the built-in secret used to push GHCR; Azure login uses OIDC and needs the repository/ref federated identity and permission to update the app. The app must already be able to pull the GHCR image (public package or configured registry credentials). Ingress must target port 8080. Use single-revision mode: the health check calls the app FQDN and does not prove which revision served it if traffic is split across revisions.
+
+### Container configuration
+
+Use normal environment variables for non-secrets and `secretref:<name>` for secrets. These names come from the application's configuration reads; `ConnectionStrings__Payment` (singular) is not used.
+
+| Environment variable | Secret? | Required value / behavior when omitted |
+| --- | --- | --- |
+| `ConnectionStrings__Payments` | Yes | MySQL connection to `goride-dbv2.mysql.database.azure.com:3306`, database `payment_db`, with the service username, password and `SslMode=VerifyFull`. Absent: HTTP 500 `INTERNAL_ERROR`; wrong host/database/credentials, TLS, permissions or network: normally HTTP 503 `PAYMENT_STORE_UNAVAILABLE`. |
+| `InternalServices__ApiKey` | Yes | Shared with trusted trip producers. Missing: internal ingestion returns 401 `INVALID_SERVICE_KEY`. |
+| `Identity__BaseUrl` | No | Reachable HTTPS identity service. Defaults to `https://localhost:7136`; authenticated calls normally fail with 503 `IDENTITY_UNAVAILABLE` in Azure. |
+| `Cors__AllowedOrigins__0`, `Cors__AllowedOrigins__1`, etc. | No | Actual frontend origins for credentialed cross-origin requests. The first default is `http://localhost:3000`; unlisted browser origins are blocked. Same-origin proxying does not need CORS. |
+| `PayHere__MerchantId` | No | Sandbox merchant ID. Missing/invalid: 503 `PAYHERE_NOT_CONFIGURED`. |
+| `PayHere__MerchantSecret` | Yes | Sandbox merchant secret. Missing/invalid: 503 `PAYHERE_NOT_CONFIGURED`. |
+| `PayHere__ReturnUrl`, `PayHere__CancelUrl`, `PayHere__NotifyUrl` | No | HTTPS frontend return/cancel URLs and public payment-service `/payments/payhere/notify` URL. Checked-in HTTP localhost defaults fail validation in Production: 503 `CHECKOUT_NOT_CONFIGURED`. |
+| `Email__Provider` | No | Defaults to `Brevo`. Set `Log` explicitly for local previews (`Logged`, no `sentAt`); other values are invalid. |
+| `Email__FromAddress` | No | Verified Brevo sender. Missing/invalid with Brevo: retries, then `Failed` after 5 attempts. |
+| `Email__FromName` | No | Optional; defaults to `GoRide`. |
+| `Email__Brevo__ApiKey` | Yes | Brevo API key. Missing: retries, then `Failed` after 5 attempts. |
+| `Receipts__DispatcherEnabled` | No | Defaults to `true`. `false` leaves receipts queued. |
+| `Receipts__PollSeconds` | No | Defaults to 5, clamped to 1–300 seconds. Retry and resend limits are fixed in code. |
+| `Kafka__Enabled` | No | Defaults to `false`; no Kafka ingestion unless enabled. HTTP ingestion remains available. |
+| `Kafka__BootstrapServers` | No | Required if Kafka is enabled; missing stops the background service/host. |
+| `Kafka__TripEventsTopic`, `Kafka__GroupId` | No | Defaults: `goride.trip.events`, `goride-payment`. |
+| `Kafka__SecurityProtocol`, `Kafka__SaslMechanism` | No | Broker-dependent; omitted values use client defaults. Use the names accepted by the Confluent enums. Wrong security settings can prevent consumption; invalid names throw. |
+| `Kafka__SaslUsername`, `Kafka__SaslPassword` | Yes | Required when the broker uses SASL credentials; absent/wrong credentials prevent consumption. |
+| `DevelopmentCheckout__Enabled` | No | Defaults to `false`; leave false in Azure. Routes also require Development and loopback access. |
+| `DemoTrips__Enabled` | No | Defaults to `false`; leave false in Azure. Simulated completion also requires Development. |
+| `DemoCard__ProcessingMilliseconds` | No | Defaults to 1500; simulated card processing delay, capped at 10000 ms. |
+| `DOTNET_ENVIRONMENT` / `ASPNETCORE_ENVIRONMENT` | No | Defaults to Production. Keep Production in Azure; `DOTNET_ENVIRONMENT` takes precedence for this hosting model. |
+| `ASPNETCORE_HTTP_PORTS` / `ASPNETCORE_URLS` | No | The runtime image defaults to port 8080. A URL override takes precedence; it must match the ingress target port. |
+| `AllowedHosts` | No | Defaults to `*`; if restricted, include the app/gateway host or requests are rejected. |
+| `Logging__LogLevel__Default`, `Logging__LogLevel__Microsoft.AspNetCore` | No | Defaults to Information and Warning; optional logging overrides. |
+
+`/health` opens `ConnectionStrings__Payments` and queries **`payments`, `payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`, `processed_payment_events`, `payment_cards`**. Empty tables are healthy. Health does not validate every column/index, write permissions, Identity, PayHere, Kafka or Brevo.
+
+For the reported 503, unapplied schema is the leading suspect, especially a missing `payment_receipts` table after this upgrade. The same code also covers wrong database/credentials, insufficient SELECT grants and MySQL network/TLS failures. A completely absent connection key instead produces 500. Check the Container App logs for the underlying MySQL error without sharing credentials.
+
+### Apply to goride-dbv2 / payment_db
+
+Run these commands yourself from a Bash shell with Azure/MySQL access and this repository as the working directory. Do not run the test suite against Azure. Use an existing trusted CA bundle and a machine allowed by the server's firewall/private network; the Container App must also have DNS and TCP 3306 access. No broad firewall change is needed or made by these commands.
+
+1. Sign in to the correct Azure subscription, select the resource group and pause receipt dispatch before repairing the schema. This keeps queued receipts untouched while delivery settings are configured.
+
+```bash
+read -rp 'Azure resource group: ' RG
+APP=goride-payment
+az containerapp revision set-mode --name "$APP" --resource-group "$RG" --mode single -o none
+az containerapp update --name "$APP" --resource-group "$RG" \
+  --set-env-vars Receipts__DispatcherEnabled=false -o none
+az containerapp secret list --name "$APP" --resource-group "$RG" --query '[].name' -o tsv
+```
+
+2. Choose the existing secret names (or new names if none exist). Enter secrets at hidden prompts; no secret belongs in a file, command history or GitHub variable. The connection string must contain the server, port, database, service user/password and TLS setting listed above. The service account needs SELECT, INSERT and UPDATE on `payment_db.*`, plus DELETE on `payment_cards`; use a separate schema administrator for DDL.
+
+```bash
+read -rp 'Payment connection secret name: ' PAYMENT_DB_SECRET
+read -rp 'Brevo API key secret name: ' BREVO_SECRET
+read -rsp 'Full Payments connection string: ' PAYMENT_CONNECTION_STRING
+printf '\n'
+read -rsp 'Brevo API key: ' BREVO_API_KEY
+printf '\n'
+read -rp 'Verified Brevo sender address: ' RECEIPT_FROM
+az containerapp secret set --name "$APP" --resource-group "$RG" \
+  --secrets "$PAYMENT_DB_SECRET=$PAYMENT_CONNECTION_STRING" "$BREVO_SECRET=$BREVO_API_KEY" -o none
+unset PAYMENT_CONNECTION_STRING BREVO_API_KEY
+az containerapp update --name "$APP" --resource-group "$RG" --set-env-vars \
+  "ConnectionStrings__Payments=secretref:$PAYMENT_DB_SECRET" \
+  "Email__Brevo__ApiKey=secretref:$BREVO_SECRET" \
+  Email__Provider=Brevo "Email__FromAddress=$RECEIPT_FROM" Email__FromName=GoRide \
+  Receipts__DispatcherEnabled=false Receipts__PollSeconds=5 -o none
+```
+
+3. Apply the canonical SQL using MySQL 8.0. `--password` prompts without storing the password. `source` executes `schema.sql` directly; do not maintain a separate migration copy. Run one schema deployment at a time. The guarded CHAR-to-VARCHAR upgrade may take a table lock, so use a suitable maintenance window for a large existing table.
+
+```bash
+read -rp 'MySQL schema administrator username: ' MYSQL_ADMIN
+read -rp 'Absolute path to trusted MySQL CA bundle: ' MYSQL_SSL_CA
+mysql --host=goride-dbv2.mysql.database.azure.com --port=3306 \
+  --user="$MYSQL_ADMIN" --password --ssl-mode=VERIFY_IDENTITY --ssl-ca="$MYSQL_SSL_CA" \
+  --execute='CREATE DATABASE IF NOT EXISTS payment_db;'
+mysql --host=goride-dbv2.mysql.database.azure.com --port=3306 \
+  --user="$MYSQL_ADMIN" --password --ssl-mode=VERIFY_IDENTITY --ssl-ca="$MYSQL_SSL_CA" \
+  --database=payment_db --execute='source src/GoRide.Payment/Data/schema.sql'
+```
+
+If the existing service account lacks table grants, run this as the schema administrator, replacing the account and host with the existing MySQL principal. No account or password change is necessary:
+
+```sql
+GRANT SELECT, INSERT, UPDATE ON payment_db.* TO '<existing-service-user>'@'<existing-account-host>';
+GRANT DELETE ON payment_db.payment_cards TO '<existing-service-user>'@'<existing-account-host>';
+```
+
+4. From the same network, connect as the **service user**, using the same TLS options, and execute the actual health query to confirm its database and SELECT grants:
+
+```sql
+USE payment_db;
+SHOW TABLES;
+SELECT 1 FROM payments
+LEFT JOIN payment_checkouts ON payments.trip_id = payment_checkouts.trip_id
+LEFT JOIN payment_verifications ON payments.trip_id = payment_verifications.trip_id
+LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id
+LEFT JOIN payment_contacts ON payments.trip_id = payment_contacts.trip_id
+LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id
+LEFT JOIN processed_payment_events ON payments.trip_id = processed_payment_events.trip_id
+LEFT JOIN payment_cards ON FALSE LIMIT 1;
+```
+
+Zero rows is fine; a SQL error is not. There should be eight application tables. Then check health and enable delivery after confirming the sender/key setup. Updating environment variables creates a new revision; if only a secret's value was changed, restart the consuming revision or deploy a new one so it takes effect.
+
+```bash
+FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
+  --query properties.configuration.ingress.fqdn -o tsv)
+curl --fail-with-body "https://$FQDN/health"
+az containerapp update --name "$APP" --resource-group "$RG" \
+  --set-env-vars Receipts__DispatcherEnabled=true -o none
+curl --fail-with-body "https://$FQDN/health"
+```
+
+Expected: HTTP 200 `{"status":"healthy","database":"connected"}`. A remaining 503 requires fixing the underlying MySQL connection, grants or network/TLS error; Brevo settings do not affect `/health`. Configure the Identity, internal service, CORS and PayHere settings from the table before exercising payment flows. Existing receipts stored as `Sent` by an older Log provider are exposed as `Logged` with no `sentAt`. They are not automatically emailed; use the authenticated resend endpoint subject to its normal limits.

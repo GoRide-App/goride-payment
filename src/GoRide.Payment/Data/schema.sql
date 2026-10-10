@@ -1,3 +1,6 @@
+-- Apply to the selected database with a schema administrator before deployment.
+-- Safe to re-run: tables and their inline indexes are created only when absent;
+-- upgrades of existing columns are guarded against their known previous definition.
 CREATE TABLE IF NOT EXISTS payments (
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin PRIMARY KEY,
     document JSON NOT NULL
@@ -58,6 +61,19 @@ CREATE TABLE IF NOT EXISTS payment_confirmations (
     INDEX ix_confirmation_rider (rider_id, paid_at),
     FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
 ) ENGINE=InnoDB;
+
+-- Early SCRUM-104 databases used CHAR(36), which MySqlConnector reads as Guid.
+-- Widen the storage representation without changing IDs, rows or existing indexes.
+SET @payment_schema_sql = IF(EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'payment_confirmations'
+      AND column_name = 'confirmation_id' AND data_type = 'char'
+      AND character_maximum_length = 36 AND character_set_name = 'ascii'
+      AND collation_name = 'ascii_bin' AND is_nullable = 'NO'
+), 'ALTER TABLE payment_confirmations MODIFY COLUMN confirmation_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL', 'SELECT 1');
+PREPARE payment_schema_statement FROM @payment_schema_sql;
+EXECUTE payment_schema_statement;
+DEALLOCATE PREPARE payment_schema_statement;
 
 -- SCRUM-105: the rider's email, taken from the verified identity session at checkout.
 CREATE TABLE IF NOT EXISTS payment_contacts (

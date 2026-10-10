@@ -25,6 +25,22 @@ public sealed class MySqlFactAttribute : FactAttribute
 public sealed class PaymentApiTests
 {
     [MySqlFact]
+    public async Task ApplyingSchemaRestoresHealthOnAnUninitialisedDatabase()
+    {
+        await using var db = await TestDatabase.CreateAsync(applySchema: false);
+        await using var app = new PaymentApplication(db.ConnectionString);
+        using var client = app.CreateClient();
+        await AssertError(await client.GetAsync("/health"), 503, "PAYMENT_STORE_UNAVAILABLE");
+
+        await db.ApplySchemaAsync();
+        using var response = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("healthy", body.GetProperty("status").GetString());
+        Assert.Equal("connected", body.GetProperty("database").GetString());
+    }
+
+    [MySqlFact]
     public async Task CompletedTripCanSelectCardThroughHttpAndRetryAcrossRestart()
     {
         await using var db = await TestDatabase.CreateAsync();
@@ -336,17 +352,25 @@ internal sealed class TestDatabase : IAsyncDisposable
         ConnectionString = new MySqlConnectionStringBuilder(admin) { Database = name }.ConnectionString;
     }
 
-    public static async Task<TestDatabase> CreateAsync()
+    public static async Task<TestDatabase> CreateAsync(bool applySchema = true)
     {
         var db = new TestDatabase(Environment.GetEnvironmentVariable("PAYMENT_TEST_MYSQL")!);
         await using var admin = new MySqlConnection(db.adminConnection);
         await admin.OpenAsync();
         await using (var create = new MySqlCommand($"CREATE DATABASE `{db.name}`", admin)) await create.ExecuteNonQueryAsync();
-        await using var connection = new MySqlConnection(db.ConnectionString);
+        if (applySchema) await db.ApplySchemaAsync();
+        return db;
+    }
+
+    public async Task ApplySchemaAsync()
+    {
+        await using var connection = new MySqlConnection(new MySqlConnectionStringBuilder(ConnectionString)
+        {
+            AllowUserVariables = true
+        }.ConnectionString);
         await connection.OpenAsync();
         await using var schema = new MySqlCommand(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Data", "schema.sql")), connection);
         await schema.ExecuteNonQueryAsync();
-        return db;
     }
 
     public async Task<long> Count(string table)
