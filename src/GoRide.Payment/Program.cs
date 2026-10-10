@@ -51,6 +51,12 @@ builder.Services.AddScoped<GoRide.Payment.Receipts.IEmailSender>(sp =>
     });
 builder.Services.AddSingleton<GoRide.Payment.Receipts.ReceiptDispatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GoRide.Payment.Receipts.ReceiptDispatcher>());
+builder.Services.AddScoped<GoRide.Payment.DriverNotifications.DriverNotificationStore>();
+builder.Services.AddScoped<GoRide.Payment.DriverNotifications.IDriverNotificationSender, GoRide.Payment.DriverNotifications.DriverNotificationSender>();
+builder.Services.AddHttpClient("DriverNotifications", client => client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+builder.Services.AddSingleton<GoRide.Payment.DriverNotifications.DriverNotificationDispatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GoRide.Payment.DriverNotifications.DriverNotificationDispatcher>());
 builder.Services.AddSingleton<PayHereSettings>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(IdentitySessionHandler.SchemeName)
@@ -116,6 +122,7 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
         LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip_id
         LEFT JOIN payment_contacts ON payments.trip_id = payment_contacts.trip_id
         LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id
+        LEFT JOIN driver_payment_notifications ON payments.trip_id = driver_payment_notifications.trip_id
         LEFT JOIN processed_payment_events ON payments.trip_id = processed_payment_events.trip_id
         LEFT JOIN payment_cards ON FALSE
         LEFT JOIN payment_card_requests ON FALSE

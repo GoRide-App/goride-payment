@@ -98,6 +98,8 @@ public sealed class VerificationStore(PaymentStore payments)
             await InsertConfirmationAsync(connection, transaction, decision.Payment, notice, ct);
             // SCRUM-105: the email receipt joins the same transaction, so it exists exactly once.
             await Receipts.ReceiptStore.CreateForPaidTripAsync(connection, transaction, decision.Payment, notice, ct);
+            // SCRUM-106: the driver's final-amount snapshot commits with Paid too.
+            await DriverNotifications.DriverNotificationStore.CreateForPaidTripAsync(connection, transaction, decision.Payment, notice, ct);
         }
         if (onRecorded is not null) await onRecorded(connection, transaction, decision);
         await transaction.CommitAsync(ct);

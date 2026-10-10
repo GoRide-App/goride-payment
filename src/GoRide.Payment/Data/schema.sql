@@ -6,6 +6,31 @@ CREATE TABLE IF NOT EXISTS payments (
     document JSON NOT NULL
 ) ENGINE=InnoDB;
 
+-- SCRUM-106: one immutable driver notification per paid card trip/payment.
+-- Delivery state is independent of the authenticated driver's polling feed.
+CREATE TABLE IF NOT EXISTS driver_payment_notifications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL UNIQUE,
+    payment_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL UNIQUE,
+    event_id VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+    driver_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    amount_minor BIGINT NOT NULL,
+    currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    card_brand VARCHAR(32) NULL,
+    card_last4 CHAR(4) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    paid_at DATETIME(6) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'Pending',
+    attempts INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(6) NOT NULL,
+    lease_token VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    lease_until DATETIME(6) NULL,
+    accepted_at DATETIME(6) NULL,
+    last_error VARCHAR(300) NULL,
+    INDEX ix_driver_notifications_feed (driver_id, id),
+    INDEX ix_driver_notifications_due (status, next_attempt_at),
+    FOREIGN KEY (trip_id) REFERENCES payments(trip_id)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS payment_checkouts (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     trip_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
