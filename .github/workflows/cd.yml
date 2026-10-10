@@ -1,0 +1,159 @@
+name: CD
+
+# Deploys this service to Azure Container Apps on every push to dev.
+# Flow: full CI -> build image -> push to GHCR -> update the container app -> check /health.
+#
+# It does nothing until the repo variable CD_ENABLED is "true".
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/goride-app/goride-payment
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINERAPP_NAME }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # 1. Same checks as a PR. Nothing gets built for Azure if these fail.
+  ci:
+    name: CI
+    if: vars.CD_ENABLED == 'true'
+    uses: ./.github/workflows/ci-reusable.yml
+    permissions:
+      contents: read
+
+  # 2. Build the image and push it to GHCR, tagged with the commit SHA.
+  image:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: ci
+    # Only publish from dev, so a manual run on another branch can't overwrite the :dev image.
+    if: vars.CD_ENABLED == 'true' && github.ref == 'refs/heads/dev'
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io with the built-in GITHUB_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The source label links the package to this repo on GitHub.
+      - name: Build image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "$IMAGE:${{ github.sha }}" \
+            -t "$IMAGE:dev" \
+            .
+
+      - name: Push image
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:dev"
+
+  # 3. Point the container app at the new image and check it actually comes up.
+  deploy:
+    name: Deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    needs: image
+    permissions:
+      contents: read
+      id-token: write # OIDC login to Azure, no password stored in GitHub
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Connection string, API key, CORS, identity URL and Kafka settings live on the
+      # container app itself (as app secrets), so a deploy only swaps the image.
+      - name: Deploy image
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE:${{ github.sha }}" \
+            -o none
+
+      # Confirms the latest revision really runs this commit's image, so an old revision
+      # can't pass /health on its behalf.
+      - name: Verify new revision
+        run: |
+          for i in $(seq 1 12); do
+            LATEST=$(az containerapp revision list \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              -o json | jq -c 'sort_by(.properties.createdTime) | last')
+            IMG=$(echo "$LATEST" | jq -r '.properties.template.containers[0].image')
+            STATE=$(echo "$LATEST" | jq -r '.properties.provisioningState')
+            echo "attempt $i/12: $(echo "$LATEST" | jq -r '.name') state=$STATE image=$IMG"
+            if [ "$IMG" = "$IMAGE:${{ github.sha }}" ] && [ "$STATE" = "Provisioned" ]; then
+              echo "New revision is provisioned."
+              exit 0
+            fi
+            if [ "$STATE" = "Failed" ]; then
+              break
+            fi
+            sleep 10
+          done
+          echo "::error title=Revision not ready::The latest revision isn't a provisioned $IMAGE:${{ github.sha }}."
+          exit 1
+
+      # /health runs SELECT 1 FROM payments, so a 500 means: MySQL unreachable, wrong
+      # connection-string secret, or the payments table is missing.
+      - name: Check /health
+        run: |
+          FQDN=$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "Checking https://$FQDN/health"
+          for i in $(seq 1 12); do
+            CODE=$(curl -s --connect-timeout 5 --max-time 10 -o body.txt -w "%{http_code}" "https://$FQDN/health" || true)
+            if [ "$CODE" = "200" ]; then
+              cat body.txt; echo
+              echo "Service is healthy."
+              exit 0
+            fi
+            echo "attempt $i/12: HTTP $CODE"
+            if [ "$i" -lt 12 ]; then
+              sleep 10
+            fi
+          done
+          echo "Last response:"; cat body.txt 2>/dev/null || true; echo
+          echo "::error title=Deploy unhealthy::/health didn't return 200 after 12 attempts (about 3 minutes)."
+          exit 1
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Deployment"
+            echo ""
+            echo "Deployed \`$IMAGE:${{ github.sha }}\` to **$CONTAINER_APP_NAME**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+
+          
