@@ -187,4 +187,5 @@ jobs:
             echo "::error title=CI failed::One or more required jobs did not pass."
             exit 1
           fi
-          echo "All required jobs passed."
+        done
+        echo "All required jobs passed."
