@@ -1,5 +1,7 @@
 name: CI (reusable)
 
+# Called by ci.yml (PRs / pushes) and by cd.yml (before a deploy).
+# Nothing merges into dev or main unless the "CI Gate" job at the bottom is green.
 on:
   workflow_call:
 
@@ -7,58 +9,182 @@ permissions:
   contents: read
 
 env:
+  # The repo root holds both goride-payment.sln and GoRide.Payment.slnx, so a bare
+  # `dotnet build` stops with MSB1011. Every dotnet command names the solution.
   SOLUTION: GoRide.Payment.slnx
   DOTNET_VERSION: "10.0.x"
   DOTNET_NOLOGO: "true"
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
 
+# Explicit bash = `bash -eo pipefail`, so `dotnet build ... | tee` can't hide a failure.
 defaults:
   run:
     shell: bash
 
 jobs:
-    build-test:
-        name: Build & Test
-        runs-on: ubuntu-latest
-        services:
-          mysql:
-            image: mysql:8.0
-            env:
-              MYSQL_ROOT_PASSWORD: ci-test-password
-              MYSQL_ROOT_HOST: "%"
-            ports:
-              - 3306:3306
-            options: >-
-              --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-test-password"
-              --health-interval=10s --health-timeout=5s --health-retries=12
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    # The HTTP tests exercise real MySQL transactions. Each test creates and drops its own
+    # payment_test_<random> database, so this throwaway root account is all they need.
+    services:
+      mysql:
+        image: mysql:8.0
         env:
-          PAYMENT_TEST_MYSQL: "Server=127.0.0.1;Port=3306;User ID=root;Password=ci-test-password;SslMode=Disabled"
-        steps:
-          - name: Checkout
-            uses: actions/checkout@v4
-    
-          - name: Setup .NET
-            uses: actions/setup-dotnet@v4
-            with:
-              dotnet-version: ${{ env.DOTNET_VERSION }}
-    
-          - name: Restore
-            run: dotnet restore "$SOLUTION"
-    
-          - name: Build (Release)
-            run: dotnet build "$SOLUTION" --no-restore -c Release 2>&1 | tee build.log
-    
-          - name: Test
-            run: |
-              dotnet test "$SOLUTION" --no-build -c Release \
-                --logger "trx;LogFileName=payment.trx" \
-                --results-directory ./TestResults
-    
-          - name: Upload test results
-            if: always()
-            uses: actions/upload-artifact@v4
-            with:
-              name: test-results
-              path: ./TestResults
-              if-no-files-found: ignore
-              retention-days: 14
+          MYSQL_ROOT_PASSWORD: ci-test-password
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-test-password"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      PAYMENT_TEST_MYSQL: "Server=127.0.0.1;Port=3306;User ID=root;Password=ci-test-password;SslMode=Disabled"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore "$SOLUTION"
+
+      - name: Build (Release)
+        run: dotnet build "$SOLUTION" --no-restore -c Release 2>&1 | tee build.log
+
+      - name: Summarise build warnings
+        if: always()
+        run: |
+          COUNT=$(grep -c ": warning " build.log || true)
+          {
+            echo "## Build"
+            echo ""
+            echo "Compiler warnings: **${COUNT}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test
+        run: |
+          dotnet test "$SOLUTION" --no-build -c Release \
+            --logger "trx;LogFileName=payment.trx" \
+            --results-directory ./TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./TestResults
+          if-no-files-found: ignore
+          retention-days: 14
+
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore "$SOLUTION"
+
+      # Advisory until the first clean-up: run `dotnet format GoRide.Payment.slnx`
+      # locally, commit, then delete the `continue-on-error` line to make it blocking
+      # (location and notification already block on this).
+      - name: Formatting check
+        id: format
+        continue-on-error: true
+        run: dotnet format "$SOLUTION" --verify-no-changes --no-restore 2>&1 | tee format.log
+
+      - name: Summarise formatting
+        if: always()
+        run: |
+          if [ "${{ steps.format.outcome }}" = "success" ]; then
+            {
+              echo "## Formatting"
+              echo ""
+              echo ":white_check_mark: Code is correctly formatted."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Formatting::Run 'dotnet format GoRide.Payment.slnx' locally and commit the result."
+            {
+              echo "## Formatting"
+              echo ""
+              echo ":warning: **Formatting violations found** — run \`dotnet format GoRide.Payment.slnx\` locally and commit."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Blocking: a dependency with a known CVE should stop a merge.
+      - name: Vulnerable NuGet packages
+        run: |
+          dotnet list "$SOLUTION" package --vulnerable --include-transitive 2>&1 | tee vuln.log
+          if grep -q "has the following vulnerable packages" vuln.log; then
+            echo "::error title=Vulnerable dependency::A NuGet package with a known CVE is referenced."
+            {
+              echo "## Dependencies"
+              echo ""
+              echo ":x: **Vulnerable packages found**"
+              echo ""
+              echo '```'
+              cat vuln.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo "## Dependencies"
+            echo ""
+            echo ":white_check_mark: No known-vulnerable packages."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Advisory: worth knowing about, not worth blocking a merge over.
+      - name: Deprecated NuGet packages
+        continue-on-error: true
+        run: |
+          dotnet list "$SOLUTION" package --deprecated --include-transitive 2>&1 | tee deprecated.log
+          if grep -q "has the following deprecated packages" deprecated.log; then
+            echo "::warning title=Deprecated dependency::A deprecated NuGet package is referenced (see log)."
+          fi
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Proves the Dockerfile still builds. Nothing is pushed here — cd.yml does that.
+      - name: Build image (no push)
+        run: docker build -t goride-payment:ci .
+
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    needs: [build-test, quality, docker]
+    if: always()
+    steps:
+      - name: Evaluate
+        run: |
+          echo "build-test : ${{ needs.build-test.result }}"
+          echo "quality    : ${{ needs.quality.result }}"
+          echo "docker     : ${{ needs.docker.result }}"
+          FAILED=0
+          for r in "${{ needs.build-test.result }}" "${{ needs.quality.result }}" "${{ needs.docker.result }}"; do
+            case "$r" in
+              success) ;;
+              *) FAILED=1 ;;
+            esac
+          done
+          if [ "$FAILED" = "1" ]; then
+            echo "::error title=CI failed::One or more required jobs did not pass."
+            exit 1
+          fi
+          echo "All required jobs passed."
