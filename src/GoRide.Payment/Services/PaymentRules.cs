@@ -115,7 +115,7 @@ public static class PaymentRules
             throw new PaymentException(403, "PAYMENT_FORBIDDEN", "Only the rider who took this trip can select its payment method.");
         if (payment.Status is "Paid" or "Charged")
             throw new PaymentException(409, "PAYMENT_SETTLED", "This trip has already been paid.");
-        if (payment.CardDisabled || payment.CardAttemptCount >= 2)
+        if (payment.CardDisabled)
             throw new PaymentException(409, "CARD_DISABLED", "Card payment is disabled for this trip.");
         if (payment.Status != "Pending")
             throw new PaymentException(409, "PAYMENT_NOT_PENDING", "This payment cannot be changed to card.");

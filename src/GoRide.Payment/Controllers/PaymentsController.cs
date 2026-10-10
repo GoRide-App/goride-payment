@@ -32,7 +32,7 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
     public async Task<IActionResult> Pay(string tripId, PayRequest request, CancellationToken ct)
     {
         Response.Headers.CacheControl = "no-store";
-        return Ok(await cardPayments.PayAsync(tripId, User.FindFirstValue("sub")!, request.CardId, RiderContact.From(User), ct));
+        return Ok(await cardPayments.PayAsync(tripId, User.FindFirstValue("sub")!, request.CardId, request.RequestId, RiderContact.From(User), ct));
     }
 
     // Local demo only (Development with DemoTrips:Enabled): records a simulated ride the
@@ -107,7 +107,7 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
 
 // Only the saved card is chosen; amount, currency and identity come from the server.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record PayRequest(string? CardId);
+public sealed record PayRequest(string? CardId, string? RequestId);
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DemoCompletionRequest(string? TripId, decimal? FinalFare);

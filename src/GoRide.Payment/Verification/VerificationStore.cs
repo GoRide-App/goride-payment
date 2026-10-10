@@ -43,7 +43,8 @@ public sealed class VerificationStore(PaymentStore payments)
     }
 
     public async Task<VerificationResult> RecordAsync(VerificationRecord notice,
-        Func<PaymentRecord, VerificationDecision> decide, CancellationToken ct)
+        Func<PaymentRecord, VerificationDecision> decide, CancellationToken ct,
+        Func<MySqlConnection, MySqlTransaction, VerificationDecision, Task>? onRecorded = null)
     {
         await using var connection = payments.CreateConnection();
         await connection.OpenAsync(ct);
@@ -98,6 +99,7 @@ public sealed class VerificationStore(PaymentStore payments)
             // SCRUM-105: the email receipt joins the same transaction, so it exists exactly once.
             await Receipts.ReceiptStore.CreateForPaidTripAsync(connection, transaction, decision.Payment, notice, ct);
         }
+        if (onRecorded is not null) await onRecorded(connection, transaction, decision);
         await transaction.CommitAsync(ct);
         return new(decision.Outcome, decision.Payment, false);
     }

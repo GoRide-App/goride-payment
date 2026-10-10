@@ -36,6 +36,7 @@ builder.Services.AddScoped<GoRide.Payment.Receipts.ReceiptService>();
 builder.Services.AddScoped<GoRide.Payment.Cards.CardStore>();
 builder.Services.AddScoped<GoRide.Payment.Cards.CardService>();
 builder.Services.AddScoped<GoRide.Payment.Cards.CardPaymentService>();
+builder.Services.AddScoped<GoRide.Payment.Cards.CardAttemptStore>();
 builder.Services.AddScoped<PaymentStatusService>();
 // Receipts use Brevo by default. Log is an explicit local-preview mode and is never reported as Sent.
 builder.Services.AddSingleton<GoRide.Payment.Receipts.EmailSettings>();
@@ -91,6 +92,12 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
         context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
         problem.Extensions["retryAfterSeconds"] = seconds;
     }
+    if (error is PaymentException { Attempts: { } count } failure)
+    {
+        problem.Extensions["retryable"] = failure.Retryable;
+        problem.Extensions["autoRetried"] = failure.AutoRetried;
+        problem.Extensions["attempts"] = count;
+    }
     await context.Response.WriteAsJsonAsync(problem);
 }));
 app.UseCors();
@@ -110,7 +117,9 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
         LEFT JOIN payment_contacts ON payments.trip_id = payment_contacts.trip_id
         LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id
         LEFT JOIN processed_payment_events ON payments.trip_id = processed_payment_events.trip_id
-        LEFT JOIN payment_cards ON FALSE LIMIT 1
+        LEFT JOIN payment_cards ON FALSE
+        LEFT JOIN payment_card_requests ON FALSE
+        LEFT JOIN payment_card_attempts ON FALSE LIMIT 1
         """, connection);
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });

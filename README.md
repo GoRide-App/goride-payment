@@ -8,7 +8,7 @@ SCRUM-101–105: a rider can manually save one test card and pay in-app after th
 2. Apply `src/GoRide.Payment/Data/schema.sql` to that database using a schema administrator. It is the single schema source for fresh databases and upgrades: missing tables and their indexes are created, and the early SCRUM-104 `confirmation_id CHAR(36)` column is guardedly converted to `VARCHAR(36)` without changing IDs or removing data. Reapplying it preserves existing rows. It does not repair arbitrary schema drift. The application never creates or changes production schemas automatically.
 3. Set `ConnectionStrings__Payments`, `Identity__BaseUrl`, and `InternalServices__ApiKey` in the environment. `.env.example` lists the settings; `.env` is not loaded automatically. Alternatively use a gitignored `src/GoRide.Payment/appsettings.Development.json`.
 4. Run `dotnet run --project src/GoRide.Payment --urls http://localhost:8083`.
-5. `GET /health` checks the database and all eight application tables: `payments`, `payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`, `processed_payment_events` and `payment_cards`.
+5. `GET /health` checks the database and all ten application tables: `payments`, `payment_checkouts`, `payment_verifications`, `payment_confirmations`, `payment_contacts`, `payment_receipts`, `processed_payment_events`, `payment_cards`, `payment_card_requests` and `payment_card_attempts`.
 
 Use TLS for database and identity connections outside local development. No credentials are committed. A Docker image can be built with `docker build -t goride-payment .` and run on container port 8080 with these environment variables.
 
@@ -28,7 +28,7 @@ Use TLS for database and identity connections outside local development. No cred
 | POST | `/payments/cards` | Rider: `{ "number": "...", "expMonth": 12, "expYear": 2030, "cvc": "...", "holderName": "...", "makeDefault": true }`; last two fields optional; returns the saved card (201), or `CARD_LIMIT_REACHED` (409) |
 | DELETE | `/payments/cards/{cardId}` | Rider: no body; removes their card (204) |
 | POST | `/payments/cards/{cardId}/default` | Rider: `{}` or no body; returns their saved card with `isDefault: true` |
-| POST | `/payments/{tripId}/pay` | Accepts exactly `{ "cardId": "..." }`; charges the saved demo card in-app |
+| POST | `/payments/{tripId}/pay` | Accepts exactly `{ "cardId": "...", "requestId": "nonempty-UUID" }`; charges the saved demo card, with one automatic retry for transient failures |
 | GET | `/payments/{tripId}/status` | Payment status for the trip's rider and driver, or JSON `null` before completion arrives |
 | POST | `/payments/demo-completions` | Rider, Development with `DemoTrips__Enabled=true` only: `{ "tripId": "trp_...", "finalFare": 640.00 }`; returns the payment record |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
@@ -195,7 +195,33 @@ For a successful test payment, manually enter `4242 4242 4242 4242`, any future 
 
 Validation returns field errors for an invalid number, expiry, CVC, or holder name. `CARD_LIMIT_REACHED` (409) means a card is already saved. A database advisory lock serializes saves and removals for each rider, including simultaneous first-card saves. Only masked metadata and a test fingerprint are stored; full card numbers and CVCs are discarded.
 
-`POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice: a success marks the trip `Paid` together with its confirmation and email receipt in one transaction, under the trip lock, so a double tap charges once. Retrying the same request returns the original confirmation with `alreadyPaid: true`, including after a restart or subsequent saved-card deletion. Declines return 402 with `CARD_DECLINED`, `INSUFFICIENT_FUNDS`, `EXPIRED_CARD`, `INCORRECT_CVC` or `PROCESSING_ERROR` and leave the trip unpaid, so the rider can remove that card and save another. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
+`POST /payments/{tripId}/pay` charges a saved card after a short simulated processing delay (`DemoCard__ProcessingMilliseconds`, default 1500). The charge is recorded as a `DemoCard` provider result through the same verification path as a PayHere notice. Receipts for demo payments say "Payment reference" instead of "PayHere reference".
+
+### SCRUM-107: one automatic retry
+
+Send `{ "cardId": "saved-card-UUID", "requestId": "new-nonempty-UUID" }`. Keep the same request ID when a response is lost; after a confirmed failure, a manual Retry uses a new ID and may select the same or a replacement saved card. Reusing an ID with another card returns 409 `PAYMENT_REQUEST_CONFLICT`. Missing/malformed request IDs and caller-supplied amounts, currency or identity return 400 `INVALID_REQUEST`; missing/foreign cards return 404 `CARD_NOT_FOUND`. Ownership and completed-trip validation still apply. An already Paid trip returns 200 with its original confirmation, including after card removal, without charging again.
+
+Only `PROCESSING_ERROR`, `PROVIDER_TIMEOUT` and `PROVIDER_UNAVAILABLE` receive one automatic server retry within the same pay request. Backoff defaults to 1000 ms (`DemoCard__RetryMilliseconds`, clamped to 0–2000 for local tests). Hard declines (`CARD_DECLINED`, `INSUFFICIENT_FUNDS`, `EXPIRED_CARD`, `INCORRECT_CVC`) are final immediately; invalid card numbers are rejected when saving a card. The service performs no real card-provider network call: timeout and 5xx behaviours are deterministic demo outcomes.
+
+Successful responses add `attempts` (for this request) and `autoRetried`. Final declines return 402 ProblemDetails with `code`, `title`, `retryable`, `autoRetried` and `attempts`. For example, two processing failures return `PROCESSING_ERROR`, `retryable: true`, `autoRetried: true`, `attempts: 2`. Hard declines return `retryable: false`, `autoRetried: false`, `attempts: 1`; use another card or correct the card issue. The logical request becomes `Failed`; the unpaid payment stays `Pending` to allow manual retry. No cash fallback or automatic card disabling is implemented.
+
+The status endpoint adds `attemptCount` (all attempts for the trip), `lastFailureCode` (retained after a later success), `requestId`, `requestState` (`Processing`, `Retrying`, `Failed`, `Paid`, or null), `requestAttempts` (completed attempts in the latest request), `autoRetried` and `retryable`. Polling `Retrying` lets checkout show “Payment didn't go through, trying once more...” while the original POST is still running. Card data on status remains limited to brand/last4.
+
+Apply `schema.sql` before deploying. It adds `payment_card_requests` and `payment_card_attempts` with `CREATE TABLE IF NOT EXISTS`; existing tables need no ALTER. Requests retain only a safe demo-card snapshot and the server's final fare in minor units. Attempts record trip-wide sequence 1..n, request attempt 1..2, outcome, failure code, amount/currency, start/completion times and whether automatic. The existing payment `cardAttemptCount` now counts every started in-app attempt. A request and checkout are created together; verification, attempt completion, request result, Paid state, confirmation and receipt commit together. The database trip lease serializes multiple service instances and fare updates. Interrupted attempts resume with their original deterministic provider identity; a disconnected browser does not cancel an accepted charge. Another request receives `PAYMENT_IN_PROGRESS` until an interrupted request is resumed. Fare corrections also wait for an unfinished request; a completed failure permits a later request at the corrected final fare. Paid fares remain immutable. A future real provider adapter must preserve provider idempotency and reconcile ambiguous timeouts before starting another charge.
+
+Demo cards (future expiry, any three-digit CVC):
+
+| Number | Result |
+| --- | --- |
+| `4242424242424242` | Success on first attempt |
+| `4000000000000341` | GoRide demo: processing error, then automatic success |
+| `4000000000000119` | Processing error twice |
+| `4000000000000077` | GoRide demo: provider timeout twice |
+| `4000000000000085` | GoRide demo: provider 503 twice |
+| `4000000000000002` | Card declined, one attempt |
+| `4000000000009995` | Insufficient funds, one attempt |
+| `4000000000000069` | Expired card, one attempt |
+| `4000000000000127` | Incorrect CVC, one attempt |
 
 Cash choice is local to the frontend and makes no payment-service request. This SCRUM-101 branch provides saved cards and in-app card payment; cash selection and driver confirmation belong to SCRUM-109, SCRUM-112 and SCRUM-113. The driver never waits for payment. `GET /payments/{tripId}/status` is shared by the rider and the driver; `select-method` accepts only Card.
 
@@ -276,6 +302,7 @@ Use normal environment variables for non-secrets and `secretref:<name>` for secr
 | `DevelopmentCheckout__Enabled` | No | Defaults to `false`; leave false in Azure. Routes also require Development and loopback access. |
 | `DemoTrips__Enabled` | No | Defaults to `false`; leave false in Azure. Simulated completion also requires Development. |
 | `DemoCard__ProcessingMilliseconds` | No | Defaults to 1500; simulated card processing delay, capped at 10000 ms. |
+| `DemoCard__RetryMilliseconds` | No | Defaults to 1000; automatic retry backoff, clamped to 0–2000 ms. |
 | `DOTNET_ENVIRONMENT` / `ASPNETCORE_ENVIRONMENT` | No | Defaults to Production. Keep Production in Azure; `DOTNET_ENVIRONMENT` takes precedence for this hosting model. |
 | `ASPNETCORE_HTTP_PORTS` / `ASPNETCORE_URLS` | No | The runtime image defaults to port 8080. A URL override takes precedence; it must match the ingress target port. |
 | `AllowedHosts` | No | Defaults to `*`; if restricted, include the app/gateway host or requests are rejected. |
@@ -352,10 +379,12 @@ LEFT JOIN payment_confirmations ON payments.trip_id = payment_confirmations.trip
 LEFT JOIN payment_contacts ON payments.trip_id = payment_contacts.trip_id
 LEFT JOIN payment_receipts ON payments.trip_id = payment_receipts.trip_id
 LEFT JOIN processed_payment_events ON payments.trip_id = processed_payment_events.trip_id
-LEFT JOIN payment_cards ON FALSE LIMIT 1;
+LEFT JOIN payment_cards ON FALSE
+LEFT JOIN payment_card_requests ON FALSE
+LEFT JOIN payment_card_attempts ON FALSE LIMIT 1;
 ```
 
-Zero rows is fine; a SQL error is not. There should be eight application tables. Then check health and enable delivery after confirming the sender/key setup. Updating environment variables creates a new revision; if only a secret's value was changed, restart the consuming revision or deploy a new one so it takes effect.
+Zero rows is fine; a SQL error is not. There should be ten application tables. Then check health and enable delivery after confirming the sender/key setup. Updating environment variables creates a new revision; if only a secret's value was changed, restart the consuming revision or deploy a new one so it takes effect.
 
 ```bash
 FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
