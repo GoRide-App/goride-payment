@@ -32,7 +32,7 @@ Use TLS for database and identity connections outside local development. No cred
 | GET | `/payments/{tripId}/status` | Payment status for the trip's rider and driver, or JSON `null` before completion arrives |
 | GET | `/payments/driver/notifications?since=<ISO timestamp>&after=<cursor>` | Authenticated trip driver: recent card-payment-success feed, `{ notifications, nextCursor }` |
 | GET | `/payments/driver/notifications/{tripId}` | Authenticated trip driver: one notification; 404 for absent or other drivers' trips |
-| POST | `/payments/demo-completions` | Rider, Development with `DemoTrips__Enabled=true` only: `{ "tripId": "trp_...", "finalFare": 640.00 }`; returns the payment record |
+| POST | `/payments/demo-completions` | Rider, `DemoTrips__Enabled=true` only (any environment): `{ "tripId": "demo_trp_...", "finalFare": 640.00 }`; returns the payment record |
 | POST | `/internal/trip-events` | Trusted `TRIP_COMPLETED` ingestion with `X-Internal-Api-Key` |
 
 All public payment operations require the rider's identity session and ownership, except `/status`, which also permits the assigned driver, and `/payments/driver/notifications`, which reads only the authenticated trip driver's notifications. PayHere notify instead verifies the provider signature; internal ingestion requires the internal service key. `GET /health` is anonymous and returns `{ "status": "healthy", "database": "connected" }`.
@@ -65,7 +65,7 @@ Saved-card responses contain `cardId`, `brand`, `last4`, `expMonth`, `expYear`, 
 
 The get/select paths match the frontend's existing `payments.get` and `payments.selectMethod` contract. The checkout endpoint returns JSON (`orderId`, `actionUrl`, `fields`, `amount`, `currency`); the client builds a hidden form from `fields` and POSTs it to `actionUrl`. Route these paths through the same frontend origin so its identity session cookie reaches the service. The payment service verifies the cookie against identity-auth's `/api/me`; it never accepts a browser-supplied rider ID. Its HTTP client does not store cookies or follow redirects. Configure `Identity__BaseUrl` to the actual identity service. Direct cross-origin clients additionally require an allowed CORS origin and credentials.
 
-The trip/fare producer must publish completion with the authoritative final fare. Existing frontend mock payments are not authoritative input. For real trips, no browser can register a completion event or set an amount; the Development-only simulated-ride endpoint is described below. Integration with the running trip producer/gateway and deployment are separate from this repository's service implementation.
+The trip/fare producer must publish completion with the authoritative final fare. Existing frontend mock payments are not authoritative input. For real trips, no browser can register a completion event or set an amount; the opt-in simulated-ride endpoint is described below. Integration with the running trip producer/gateway and deployment are separate from this repository's service implementation.
 
 Example trusted completion body (send with the configured internal service key):
 
@@ -251,7 +251,9 @@ Demo cards (future expiry, any three-digit CVC):
 
 Cash choice is local to the frontend and makes no payment-service request. This SCRUM-101 branch provides saved cards and in-app card payment; cash selection and driver confirmation belong to SCRUM-109, SCRUM-112 and SCRUM-113. The driver never waits for payment. `GET /payments/{tripId}/status` is shared by the rider and the driver; `select-method` accepts only Card.
 
-Simulated rides (the app's demo drivers) never reach the trip service, so in Development with `DemoTrips__Enabled=true` the rider app may report one with `POST /payments/demo-completions` `{ "tripId": "trp_...", "finalFare": 640.00 }`. It only accepts simulated `trp_` IDs, is idempotent, and is 404 everywhere else. Real trips are completed only by the trip service through `/internal/trip-events`.
+Simulated rides (the app's demo drivers) never reach the trip service. With `DemoTrips__Enabled=true`, the rider app may report one with `POST /payments/demo-completions` `{ "tripId": "demo_trp_...", "finalFare": 640.00 }` in any environment, including Production. The flag defaults to false (404 when off); the live Azure demo sets `DemoTrips__Enabled=true` while keeping Production. `DemoTrips__MaxFare` defaults to `100000` LKR. Fare must be positive, no higher than that maximum, and have at most two decimals (`INVALID_FARE`, 400).
+
+IDs must match `^demo_trp_[A-Za-z0-9_-]{1,100}$` (`INVALID_REQUEST`, 400). This covers the frontend's `trp_<uuid>` generator and its base36 fallback after adding `demo_`. The frontend uses that stable payment ID for every simulated ride payment call and restores the original UI trip ID in responses; live ride IDs stay unchanged. Rider identity comes only from the authenticated session; body identity fields are rejected. Repeating the same rider and fare returns the existing record, including after payment. A different rider or fare returns `DEMO_TRIP_CONFLICT` (409), without modifying it; concurrent requests share the checkout trip lock. Real trips are completed only by the trip service: both `/internal/trip-events` and the Kafka completion consumer reject every ID starting with `demo_` (`INVALID_REQUEST`, 400).
 
 ## Kafka
 
@@ -326,7 +328,8 @@ Use normal environment variables for non-secrets and `secretref:<name>` for secr
 | `Kafka__SecurityProtocol`, `Kafka__SaslMechanism` | No | Broker-dependent; omitted values use client defaults. Use the names accepted by the Confluent enums. Wrong security settings can prevent consumption; invalid names throw. |
 | `Kafka__SaslUsername`, `Kafka__SaslPassword` | Yes | Required when the broker uses SASL credentials; absent/wrong credentials prevent consumption. |
 | `DevelopmentCheckout__Enabled` | No | Defaults to `false`; leave false in Azure. Routes also require Development and loopback access. |
-| `DemoTrips__Enabled` | No | Defaults to `false`; leave false in Azure. Simulated completion also requires Development. |
+| `DemoTrips__Enabled` | No | Defaults to `false` (404 when off), independent of environment. The live Azure demo sets `true` in Production. Only namespaced simulated trips are accepted. |
+| `DemoTrips__MaxFare` | No | Defaults to `100000` LKR; positive demo fares must not exceed this value and must have at most two decimals. |
 | `DemoCard__ProcessingMilliseconds` | No | Defaults to 1500; simulated card processing delay, capped at 10000 ms. |
 | `DemoCard__RetryMilliseconds` | No | Defaults to 1000; automatic retry backoff, clamped to 0–2000 ms. |
 | `DOTNET_ENVIRONMENT` / `ASPNETCORE_ENVIRONMENT` | No | Defaults to Production. Keep Production in Azure; `DOTNET_ENVIRONMENT` takes precedence for this hosting model. |

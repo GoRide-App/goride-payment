@@ -17,7 +17,7 @@ namespace GoRide.Payment.Controllers;
 [Route("payments")]
 public sealed class PaymentsController(PaymentStore store, CheckoutService checkout, ConfirmationService confirmations,
     ReceiptService receipts, CardPaymentService cardPayments, PaymentStatusService statuses,
-    IConfiguration configuration, IWebHostEnvironment environment) : ControllerBase
+    IConfiguration configuration) : ControllerBase
 {
     // Shared by the trip's rider and driver; JSON null until the completed trip arrives.
     [HttpGet("{tripId}/status")]
@@ -35,12 +35,12 @@ public sealed class PaymentsController(PaymentStore store, CheckoutService check
         return Ok(await cardPayments.PayAsync(tripId, User.FindFirstValue("sub")!, request.CardId, request.RequestId, RiderContact.From(User), ct));
     }
 
-    // Local demo only (Development with DemoTrips:Enabled): records a simulated ride the
+    // Opt-in demo (DemoTrips:Enabled): records a simulated ride the
     // trip service never saw, so it can be paid and receipted like a real one.
     [HttpPost("demo-completions")]
     public async Task<IActionResult> CompleteDemoTrip(DemoCompletionRequest request, CancellationToken ct)
     {
-        if (!environment.IsDevelopment() || !configuration.GetValue<bool>("DemoTrips:Enabled")) return NotFound();
+        if (!configuration.GetValue<bool>("DemoTrips:Enabled")) return NotFound();
         Response.Headers.CacheControl = "no-store";
         return Ok(await statuses.CompleteDemoTripAsync(request.TripId, request.FinalFare, User.FindFirstValue("sub")!, ct));
     }
