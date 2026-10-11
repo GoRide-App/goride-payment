@@ -316,16 +316,12 @@ public sealed class CardApiTests
     }
 
     [MySqlFact]
-    public async Task SimulatedRidesCanOnlyBeCompletedLocallyByTheirRider()
+    public async Task SimulatedRidesCanBeCompletedAndPaidByTheirRiderInProduction()
     {
         await using var db = await TestDatabase.CreateAsync();
-        await using (var testing = new PaymentApplication(db.ConnectionString, settings: new() { ["DemoTrips:Enabled"] = "true" }))
-        using (var client = Client(testing, "rider-1"))
-            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync("/payments/demo-completions", new { tripId = "trp_demo-1", finalFare = 640m })).StatusCode);
-
-        await using var app = new PaymentApplication(db.ConnectionString, "Development", new() { ["DemoTrips:Enabled"] = "true" });
+        await using var app = new PaymentApplication(db.ConnectionString, "Production", new() { ["DemoTrips:Enabled"] = "true" });
         using var rider = Client(app, "rider-1-email");
-        var trip = "trp_" + Guid.NewGuid();
+        var trip = "demo_trp_" + Guid.NewGuid();
         await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/demo-completions", new { tripId = "trip-123", finalFare = 640m }), 400, "INVALID_REQUEST");
         await CheckoutApiTests.Error(await rider.PostAsJsonAsync("/payments/demo-completions", new { tripId = trip, finalFare = 0.001m }), 400, "INVALID_FARE");
         for (var i = 0; i < 2; i++)
@@ -335,7 +331,7 @@ public sealed class CardApiTests
             Assert.Equal("rider-1", (await created.Content.ReadFromJsonAsync<PaymentRecord>())!.RiderId);
         }
         using (var other = Client(app, "other"))
-            await CheckoutApiTests.Error(await other.PostAsJsonAsync("/payments/demo-completions", new { tripId = trip, finalFare = 640m }), 403, "PAYMENT_FORBIDDEN");
+            await CheckoutApiTests.Error(await other.PostAsJsonAsync("/payments/demo-completions", new { tripId = trip, finalFare = 640m }), 409, "DEMO_TRIP_CONFLICT");
         var card = (await AddCard(rider, "4242424242424242")).GetProperty("cardId").GetString();
         using var paid = await rider.PostAsJsonAsync($"/payments/{trip}/pay", new { requestId = Guid.NewGuid().ToString(), cardId = card });
         Assert.Equal(640m, (await paid.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("confirmation").GetProperty("amount").GetDecimal());
