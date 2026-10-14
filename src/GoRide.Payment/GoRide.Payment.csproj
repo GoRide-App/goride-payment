@@ -7,6 +7,7 @@
   <ItemGroup>
     <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="Confluent.Kafka" Version="2.15.1" />
+    <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Data/schema.sql" CopyToOutputDirectory="PreserveNewest" />
