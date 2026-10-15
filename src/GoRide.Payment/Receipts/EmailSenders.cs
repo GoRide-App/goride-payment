@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace GoRide.Payment.Receipts;
@@ -53,10 +55,15 @@ public sealed class BrevoEmailSender(IHttpClientFactory clients, EmailSettings s
         });
         try
         {
-            using var response = await clients.CreateClient("Brevo").SendAsync(request, ct);
+            var client = clients.CreateClient("Brevo");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(client.Timeout);
+            // Stream the response so an error body is never buffered in full. Keep the
+            // client's timeout active while reading the body as well as the headers.
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (response.IsSuccessStatusCode)
             {
-                using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+                using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(timeout.Token), cancellationToken: timeout.Token);
                 if (json.RootElement.TryGetProperty("messageId", out var id)
                     && id.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(id.GetString()))
                     return id.GetString()!;
@@ -64,18 +71,62 @@ public sealed class BrevoEmailSender(IHttpClientFactory clients, EmailSettings s
             }
             // 401/403 mean the key or this server's IP is not allowed (an account setting), so the
             // receipt is retried until that is fixed. Other 4xx (except throttling) reject this
-            // message and will not succeed on retry. Provider error bodies are not kept.
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                throw new EmailDeliveryException(
-                    $"Brevo refused the API key or this server's IP ({(int)response.StatusCode}). Check the key and Brevo's authorised IPs.", false);
-            var permanent = (int)response.StatusCode is >= 400 and < 500 && response.StatusCode != HttpStatusCode.TooManyRequests;
-            throw new EmailDeliveryException($"Brevo rejected the email ({(int)response.StatusCode}).", permanent);
+            // message and will not succeed on retry.
+            var refused = response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+            var prefix = refused ? $"Brevo refused the API key or this server's IP ({(int)response.StatusCode})"
+                : $"Brevo rejected the email ({(int)response.StatusCode})";
+            var reason = "";
+            try { reason = await ReadErrorReasonAsync(response.Content, settings.BrevoApiKey, timeout.Token); }
+            catch (Exception ex) when (ex is IOException or HttpRequestException
+                || ex is OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                // An unreadable body must not change the status code's retry classification.
+            }
+            var error = reason.Length == 0
+                ? prefix + (refused ? ". Check the key and Brevo's authorised IPs." : ".")
+                : prefix + ": " + reason;
+            if (error.Length > 290)
+            {
+                var length = char.IsHighSurrogate(error[286]) ? 286 : 287;
+                error = error[..length] + "...";
+            }
+            var permanent = !refused && (int)response.StatusCode is >= 400 and < 500 && response.StatusCode != HttpStatusCode.TooManyRequests;
+            throw new EmailDeliveryException(error, permanent);
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException
+        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException
             || ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
             throw new EmailDeliveryException("Brevo could not be reached.", false);
         }
+    }
+
+    private static async Task<string> ReadErrorReasonAsync(HttpContent content, string apiKey, CancellationToken ct)
+    {
+        using var stream = await content.ReadAsStreamAsync(ct);
+        var buffer = new byte[2048];
+        var count = await stream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, cancellationToken: ct);
+        var reason = Encoding.UTF8.GetString(buffer, 0, count);
+        try
+        {
+            using var json = JsonDocument.Parse(reason);
+            if (json.RootElement.ValueKind == JsonValueKind.Object
+                && json.RootElement.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
+                reason = message.GetString()!;
+        }
+        catch (JsonException) { } // Plain text or a JSON body cut off at the read limit.
+
+        var printable = new StringBuilder();
+        foreach (var rune in reason.EnumerateRunes())
+        {
+            if (Rune.IsWhiteSpace(rune))
+            {
+                if (printable.Length > 0 && printable[^1] != ' ') printable.Append(' ');
+            }
+            else if (Rune.GetUnicodeCategory(rune) is not (UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.OtherNotAssigned))
+                printable.Append(rune.ToString());
+        }
+        // Only response text is retained; redact the configured key even if the provider echoes it.
+        return printable.ToString().Trim().Replace(apiKey, "[redacted]", StringComparison.Ordinal);
     }
 }
 

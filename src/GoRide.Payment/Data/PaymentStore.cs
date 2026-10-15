@@ -56,7 +56,7 @@ public sealed class PaymentStore(IConfiguration configuration)
         return await ReadAsync(connection, null, evt.TripId!, ct);
     }
 
-    // Entry points must use TripCompletionService so fare changes and checkout share a trip lock.
+    // Completion entry points must hold the checkout trip lock before calling this store.
     internal async Task<PaymentRecord> CompleteAsync(TripCompletedEvent evt, CancellationToken ct)
     {
         PaymentRules.ValidateCompletion(evt);

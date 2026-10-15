@@ -10,6 +10,10 @@ public sealed class TripCompletionService(PaymentStore payments, CheckoutStore c
     public async Task<PaymentRecord> CompleteAsync(TripCompletedEvent evt, CancellationToken ct)
     {
         PaymentRules.ValidateCompletion(evt);
+        // Both trusted HTTP events and Kafka use this entry point. The browser's
+        // demo namespace can only be created through the opt-in demo completion path.
+        if (evt.TripId!.StartsWith("demo_", StringComparison.Ordinal))
+            throw new PaymentException(400, "INVALID_REQUEST", "The demo_ trip namespace is reserved for simulated rides.");
         // The trip lock serializes fare changes with checkout creation and provider
         // verification. A PayHere order has nothing to expire at the provider: a payment
         // made against a superseded amount is rejected when it is verified.

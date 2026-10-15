@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using MySqlConnector;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
@@ -106,6 +107,10 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     }
     await context.Response.WriteAsJsonAsync(problem);
 }));
+
+app.UseRouting();      // so metrics are grouped by route, e.g. payments/{tripId}, not by real trip IDs
+app.UseHttpMetrics();  // counts and times every HTTP request
+
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -131,6 +136,9 @@ app.MapGet("/health", async (PaymentStore store, CancellationToken ct) =>
     await command.ExecuteScalarAsync(ct);
     return Results.Ok(new { status = "healthy", database = "connected" });
 });
+
+app.MapMetrics();      // serves GET /metrics
+
 app.Run();
 
 public partial class Program;
